@@ -41,15 +41,15 @@ for manual in "${project_readmes[@]}"; do
     project_dir="${manual%/README.md}"
 
     for section in "${required_sections[@]}"; do
-        if ! rg -q "^## ${section}$" "${manual}"; then
+        if ! grep -Eq "^## ${section}$" "${manual}"; then
             printf 'missing section %s: %s\n' "${section}" "${relative_manual}" >&2
             status=1
         fi
     done
 
-    if ! rg -q 'QEMU `v11\.1\.0`' "${manual}" ||
-       ! rg -q '`v11\.1\.0-rc0`' "${manual}" ||
-       ! rg -q 'RISC-V|riscv64' "${manual}"; then
+    if ! grep -Eq 'QEMU `v11\.1\.0`' "${manual}" ||
+       ! grep -Eq '`v11\.1\.0-rc0`' "${manual}" ||
+       ! grep -Eq 'RISC-V|riscv64' "${manual}"; then
         printf 'missing baseline metadata: %s\n' "${relative_manual}" >&2
         status=1
     fi
@@ -68,9 +68,9 @@ for manual in "${project_readmes[@]}"; do
                 "${command_ref}" "${relative_manual}" >&2
             status=1
         fi
-    done < <(rg -o '`\./[A-Za-z0-9_.-]+' "${manual}" | tr -d '`' | sort -u)
+    done < <(grep -Eo '`\./[A-Za-z0-9_.-]+' "${manual}" | tr -d '`' | sort -u)
 
-    if rg -qi '\bplanned\b|no .*committed|not .*committed|absent now' "${manual}"; then
+    if grep -Eqi '\bplanned\b|no .*committed|not .*committed|absent now' "${manual}"; then
         printf 'stale planned-only wording: %s\n' "${relative_manual}" >&2
         status=1
     fi
@@ -86,7 +86,7 @@ done
 while IFS= read -r source_file; do
     relative_source="${source_file#"${experiments_dir}/"}"
     if ! head -n 8 "${source_file}" |
-         rg -q 'SPDX-License-Identifier: Apache-2\.0'; then
+         grep -Eq 'SPDX-License-Identifier: Apache-2\.0'; then
         printf 'missing Apache-2.0 SPDX header: %s\n' \
             "${relative_source}" >&2
         status=1
