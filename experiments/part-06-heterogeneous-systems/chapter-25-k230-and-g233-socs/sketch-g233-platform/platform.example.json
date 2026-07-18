@@ -1,0 +1,31 @@
+{
+    "platform": "g233-book-model",
+    "architecture": "riscv64",
+    "source_review_anchor": "v11.1.0-rc0",
+    "components": [
+        {
+            "name": "reset-vector",
+            "status": "unknown",
+            "value": null,
+            "evidence": null
+        },
+        {
+            "name": "main-memory",
+            "status": "unknown",
+            "value": null,
+            "evidence": null
+        },
+        {
+            "name": "interrupt-controller",
+            "status": "unknown",
+            "value": null,
+            "evidence": null
+        },
+        {
+            "name": "uart",
+            "status": "unknown",
+            "value": null,
+            "evidence": null
+        }
+    ]
+}

@@ -2,9 +2,15 @@
 title: 深入理解 QEMU 设计原理
 subtitle: 从对象模型、动态翻译到设备、I/O 与迁移
 author:
-  - GEVICO 开源社区
+  - 刘超、王振辰
 date: 持续更新
 lang: zh-CN
+qemu-source-url: https://gitlab.com/qemu-project/qemu
+qemu-reference-version: v11.1.0
+qemu-research-version: v11.1.0-rc0
+qemu-primary-architecture: riscv64
+book-repository-url: https://github.com/gevico/qemu-book
+book-repository-ref: main
 documentclass: ctexbook
 classoption:
   - UTF8

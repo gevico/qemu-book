@@ -9,3 +9,9 @@ book/*.aux
 book/*.log
 book/*.out
 book/*.toc
+
+# Local experiment outputs and downloaded fixtures
+experiments/**/results/
+experiments/**/build/
+experiments/**/__pycache__/
+experiments/**/target/

@@ -47,9 +47,13 @@ jobs:
         with:
           ref: ${{ steps.release.outputs.tag }}
 
+      - name: Check experiment layout
+        run: make check-experiments
+
       - name: Build versioned PDF
         env:
           BOOK_VERSION: ${{ steps.release.outputs.tag }}
+          BOOK_REPOSITORY_REF: ${{ steps.release.outputs.tag }}
           OUTPUT_FILENAME: ${{ steps.release.outputs.asset }}
         run: make pdf
 

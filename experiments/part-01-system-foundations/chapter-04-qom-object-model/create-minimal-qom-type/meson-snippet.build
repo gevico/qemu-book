@@ -1,0 +1,3 @@
+# Add this entry to the `tests` dictionary in tests/unit/meson.build.
+# The `qom` source set supplies the object model implementation.
+'test-qemu-book-counter': [qom],

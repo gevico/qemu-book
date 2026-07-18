@@ -2,8 +2,39 @@
 \definecolor{QEMUDark}{HTML}{17324D}
 \definecolor{QEMULight}{HTML}{EFF5FC}
 \definecolor{QEMUGreen}{HTML}{2B7A5A}
+\definecolor{CoverGold}{HTML}{E2B866}
+
+\usepackage{graphicx}
+\usepackage{tikz}
+\makeatletter
+\renewcommand{\maketitle}{%
+    \begin{titlepage}
+        \thispagestyle{empty}%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node[inner sep=0pt] at (current page.center) {%
+                \includegraphics[width=\paperwidth,height=\paperheight]{images/cover.png}%
+            };
+            \node[
+                anchor=south,
+                align=center,
+                text=CoverGold,
+                font=\sffamily
+            ] at ([yshift=30mm]current page.south) {%
+                \large \@author\ 著\\[1.5mm]
+                \normalsize 版本：\@title\enspace·\enspace 日期：\@date
+            };
+        \end{tikzpicture}%
+        \null
+    \end{titlepage}%
+}
+\makeatother
 
 \ctexset{
+    part={
+        format=\Huge\bfseries\sffamily\color{QEMUDark},
+        name={第,篇},
+        number=\chinese{part}
+    },
     chapter={
         format=\Huge\bfseries\sffamily\color{QEMUDark},
         name={第,章},
@@ -63,6 +94,57 @@
     fonttitle=\bfseries\sffamily,
     boxrule=0.7pt,
     arc=1mm
+}
+
+\newcommand{\quizfilledsquare}{%
+    \textcolor{QEMUDark}{\rule{1.05ex}{1.05ex}}%
+}
+\newcommand{\quizopensquare}{%
+    \begingroup\setlength{\fboxsep}{0pt}%
+    \textcolor{QEMUDark}{\fbox{\rule{0pt}{1.05ex}\rule{1.05ex}{0pt}}}%
+    \endgroup
+}
+
+\newtcolorbox{quickquizbox}[1]{
+    breakable,
+    enhanced,
+    title={#1},
+    colback=black!3,
+    colbacktitle=black!3,
+    colframe=black!45,
+    coltitle=QEMUDark,
+    fonttitle=\bfseries\sffamily,
+    boxrule=0.5pt,
+    arc=1.2mm,
+    left=0.65em,
+    right=0.65em,
+    top=0.35em,
+    bottom=0.35em,
+    toptitle=0.35em,
+    bottomtitle=0.1em,
+    before skip=0.8em,
+    after skip=0.8em
+}
+
+\newtcolorbox{quickquizanswerbox}[2]{
+    breakable,
+    enhanced,
+    title={#1\hfill\normalfont\footnotesize 原题：第\pageref{#2}页},
+    colback=black!2,
+    colbacktitle=black!2,
+    colframe=black!45,
+    coltitle=QEMUDark,
+    fonttitle=\bfseries\sffamily,
+    boxrule=0.5pt,
+    arc=1.2mm,
+    left=0.65em,
+    right=0.65em,
+    top=0.35em,
+    bottom=0.35em,
+    toptitle=0.35em,
+    bottomtitle=0.1em,
+    before skip=0.8em,
+    after skip=0.45em
 }
 
 \usepackage{caption}

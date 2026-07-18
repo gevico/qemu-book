@@ -1,0 +1,32 @@
+diff --git a/target/riscv/insn32.decode b/target/riscv/insn32.decode
+index 083d77422f..54db53f7af 100644
+--- a/target/riscv/insn32.decode
++++ b/target/riscv/insn32.decode
+@@ -168,6 +168,9 @@ xor      0000000 .....    ..... 100 ..... 0110011 @r
+ srl      0000000 .....    ..... 101 ..... 0110011 @r
+ sra      0100000 .....    ..... 101 ..... 0110011 @r
+ or       0000000 .....    ..... 110 ..... 0110011 @r
+ and      0000000 .....    ..... 111 ..... 0110011 @r
++
++# Private qemu-book teaching opcode. This is not a standard extension.
++bookadd  1010101 .....    ..... 000 ..... 0001011 @r
+ 
+ {
+   pause  0000 0001   0000   00000 000 00000 0001111
+diff --git a/target/riscv/tcg/insn_trans/trans_rvi.c.inc b/target/riscv/tcg/insn_trans/trans_rvi.c.inc
+index b073311f0d..ad51f5c719 100644
+--- a/target/riscv/tcg/insn_trans/trans_rvi.c.inc
++++ b/target/riscv/tcg/insn_trans/trans_rvi.c.inc
+@@ -711,6 +711,12 @@ static bool trans_add(DisasContext *ctx, arg_add *a)
+     return gen_arith(ctx, a, EXT_NONE, tcg_gen_add_tl, tcg_gen_add2_tl);
+ }
+ 
++static bool trans_bookadd(DisasContext *ctx, arg_bookadd *a)
++{
++    /* Private teaching opcode: rd = rs1 + rs2. */
++    return gen_arith(ctx, a, EXT_NONE, tcg_gen_add_tl, tcg_gen_add2_tl);
++}
++
+ static bool trans_sub(DisasContext *ctx, arg_sub *a)
+ {
+     return gen_arith(ctx, a, EXT_NONE, tcg_gen_sub_tl, tcg_gen_sub2_tl);
