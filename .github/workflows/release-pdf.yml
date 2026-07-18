@@ -1,0 +1,71 @@
+name: Release PDF
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish book
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+              tag="${INPUT_TAG}"
+          else
+              tag="${REF_NAME}"
+          fi
+
+          if [[ ! "${tag}" =~ ^v[0-9] ]]; then
+              echo "error: release tag must start with v followed by a digit" >&2
+              exit 1
+          fi
+
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "asset=深入理解-QEMU-设计原理-${tag}.pdf" >> "${GITHUB_OUTPUT}"
+
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - name: Build versioned PDF
+        env:
+          BOOK_VERSION: ${{ steps.release.outputs.tag }}
+          OUTPUT_FILENAME: ${{ steps.release.outputs.asset }}
+        run: make pdf
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_ASSET: ${{ steps.release.outputs.asset }}
+        run: |
+          asset_path="output/pdf/${RELEASE_ASSET}"
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+              gh release upload "${RELEASE_TAG}" "${asset_path}" --clobber
+          else
+              gh release create "${RELEASE_TAG}" "${asset_path}" \
+                  --verify-tag \
+                  --title "《深入理解 QEMU 设计原理》${RELEASE_TAG}" \
+                  --generate-notes
+          fi

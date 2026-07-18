@@ -1,0 +1,31 @@
+---
+title: 深入理解 QEMU 设计原理
+subtitle: 从对象模型、动态翻译到设备、I/O 与迁移
+author:
+  - GEVICO 开源社区
+date: 持续更新
+lang: zh-CN
+documentclass: ctexbook
+classoption:
+  - UTF8
+  - oneside
+  - openany
+papersize: a4
+fontsize: 11pt
+geometry:
+  - top=2.5cm
+  - bottom=2.5cm
+  - left=2.7cm
+  - right=2.7cm
+toc: true
+toc-depth: 3
+toc-title: 目录
+numbersections: true
+colorlinks: true
+linkcolor: QEMUBlue
+urlcolor: QEMUBlue
+citecolor: QEMUBlue
+CJKmainfont: Noto Serif CJK SC
+CJKsansfont: Noto Sans CJK SC
+monofont: Noto Sans Mono CJK SC
+...

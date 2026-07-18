@@ -1,0 +1,77 @@
+\definecolor{QEMUBlue}{HTML}{2057A5}
+\definecolor{QEMUDark}{HTML}{17324D}
+\definecolor{QEMULight}{HTML}{EFF5FC}
+\definecolor{QEMUGreen}{HTML}{2B7A5A}
+
+\ctexset{
+    chapter={
+        format=\Huge\bfseries\sffamily\color{QEMUDark},
+        name={第,章},
+        number=\chinese{chapter}
+    },
+    section={format=\Large\bfseries\sffamily\color{QEMUDark}},
+    subsection={format=\large\bfseries\sffamily\color{QEMUDark}}
+}
+
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.25em}
+\setlength{\emergencystretch}{3em}
+
+\usepackage{fvextra}
+\fvset{
+    breaklines=true,
+    breakanywhere=true,
+    fontsize=\small
+}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{
+    commandchars=\\\{\},
+    breaklines=true,
+    breakanywhere=true,
+    fontsize=\small
+}
+
+\usepackage[most]{tcolorbox}
+\newtcolorbox{designnotebox}{
+    breakable,
+    enhanced,
+    title={设计取舍},
+    colback=QEMULight,
+    colframe=QEMUBlue,
+    coltitle=white,
+    fonttitle=\bfseries\sffamily,
+    boxrule=0.7pt,
+    arc=1mm
+}
+\newtcolorbox{sourcepathbox}{
+    breakable,
+    enhanced,
+    title={源码路径},
+    colback=black!2,
+    colframe=QEMUDark,
+    coltitle=white,
+    fonttitle=\bfseries\sffamily,
+    boxrule=0.7pt,
+    arc=1mm
+}
+\newtcolorbox{handsonbox}{
+    breakable,
+    enhanced,
+    title={动手实验},
+    colback=QEMUGreen!6,
+    colframe=QEMUGreen,
+    coltitle=white,
+    fonttitle=\bfseries\sffamily,
+    boxrule=0.7pt,
+    arc=1mm
+}
+
+\usepackage{caption}
+\captionsetup{
+    font=small,
+    labelfont=bf,
+    justification=centering
+}
+
+\renewcommand{\contentsname}{目录}
+\renewcommand{\figurename}{图}
+\renewcommand{\tablename}{表}
