@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Minimal Sv39 page-table walk model for one-stage teaching experiments."""
+"""Minimal one-stage Sv39 walk using Svade-style ADUE=0 fault semantics."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ def walk_sv39(
             if access == "execute" and not executable:
                 raise PageFault("execute permission denied")
             if not (pte & PTE_A) or (access == "write" and not (pte & PTE_D)):
-                raise PageFault("A/D update is outside this non-mutating model")
+                raise PageFault("missing A/D faults in this ADUE=0 model")
 
             pte_ppn = pte >> 10
             low_bits = level * 9

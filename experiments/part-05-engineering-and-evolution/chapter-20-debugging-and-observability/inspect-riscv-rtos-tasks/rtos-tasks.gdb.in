@@ -1,0 +1,42 @@
+# RISC-V RTOS GDB template. Replace uppercase placeholders before use.
+set pagination off
+set confirm off
+set print pretty on
+set schedule-multiple on
+file RTOS_ELF_PATH
+target remote GDB_UNIX_SOCKET
+
+# These are QEMU vCPU/hart entries. Do not label them RTOS tasks.
+info threads
+thread apply all info registers pc sp ra
+
+# Replace with the exact scheduler symbol validated by preflight.sh.
+hbreak RTOS_SCHEDULER_SYMBOL
+continue
+info threads
+info registers pc sp ra
+
+# FreeRTOS-style example for a RISC-V guest. It requires matching debug types.
+# SMP ports may expose a per-hart array instead of this scalar pointer.
+p/x &pxCurrentTCB
+p/x pxCurrentTCB
+p *pxCurrentTCB
+p pxCurrentTCB->pcTaskName
+p/x pxCurrentTCB->pxTopOfStack
+x/32gx pxCurrentTCB->pxTopOfStack
+
+# Inspect another task only by walking the exact build's bounded ready/list
+# structures. Never paste a TCB offset or list layout from another release.
+# p pxReadyTasksLists[READY_PRIORITY]
+
+# Zephyr-style RISC-V alternative: replace the breakpoint and expressions
+# with the symbols/types from the exact Zephyr ELF and configuration.
+# hbreak z_swap
+# p/x _current
+# p *_current
+# x/32gx _current->callee_saved.sp
+
+# An RTOS-aware extension may synthesize task rows here. Record its version;
+# retain the original hart list above as a separate observation.
+# source RTOS_AWARENESS_SCRIPT
+# monitor info status

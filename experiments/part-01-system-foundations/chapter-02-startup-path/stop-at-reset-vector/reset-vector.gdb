@@ -1,7 +1,7 @@
 set pagination off
 set confirm off
 set architecture riscv:rv64
-target remote :1234
+target remote 127.0.0.1:1234
 printf "initial-pc="
 output/x $pc
 printf "\n"

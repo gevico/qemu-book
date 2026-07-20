@@ -3,7 +3,7 @@
 Status: runnable safe Rust register-state crate; QOM/SysBus integration remains
 a separate tree-out exercise.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; target machine
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; target machine
 context RISC-V `riscv64`.
 
 ## Purpose

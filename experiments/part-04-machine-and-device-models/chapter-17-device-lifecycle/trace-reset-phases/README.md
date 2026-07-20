@@ -2,7 +2,7 @@
 
 Status: runnable when the build exposes suitable reset/device trace events.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64`.
 
 ## Purpose
@@ -28,6 +28,10 @@ construction defaults from reset-restored state.
 3. Compare the two register views around the scripted `system_reset` and the
    ordered records in `results/reset.trace`.
 4. Follow Resettable phases and device callbacks in source to explain order.
+   The supplied script uses `-machine virt`, whose UART is a 16550-compatible
+   `serial-mm` device. To inspect `sifive_uart_reset_enter()` and
+   `sifive_uart_reset_hold()`, run a separate `sifive_u` session; those
+   callbacks are not part of the `virt` object graph.
 
 ## Expected results
 
@@ -43,3 +47,5 @@ Quit QEMU and remove generated traces.
 - If no suitable trace event exists, use a debug build or source-only path and
   label the runtime branch skipped.
 - Do not infer callback order from registration order alone.
+- Always record the Machine type before setting a device callback breakpoint;
+  a valid breakpoint in the source tree may be unreachable in that Machine.

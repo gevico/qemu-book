@@ -19,7 +19,8 @@ printf 'info cpus\nquit\n' | "${qemu}" \
     -display none -monitor stdio -serial none \
     >"${results_dir}/tcg-monitor.txt" 2>"${results_dir}/tcg.stderr"
 
-if [[ "$(uname -m)" == riscv64 && -r /dev/kvm ]] && \
+if [[ "$(uname -s)" == Linux && "$(uname -m)" == riscv64 && \
+   -r /dev/kvm && -w /dev/kvm ]] && \
    rg -q '^kvm$' "${results_dir}/accels.txt"; then
     printf 'info cpus\nquit\n' | "${qemu}" \
         -machine virt -cpu host -accel kvm -smp 2 -S \
@@ -27,8 +28,10 @@ if [[ "$(uname -m)" == riscv64 && -r /dev/kvm ]] && \
         >"${results_dir}/kvm-monitor.txt" 2>"${results_dir}/kvm.stderr"
     echo "kvm_status=executed" >"${results_dir}/kvm-status.txt"
 else
-    echo "kvm_status=skipped host=$(uname -m) dev_kvm=$([[ -r /dev/kvm ]] && echo readable || echo unavailable)" \
+    echo "kvm_status=skipped os=$(uname -s) host=$(uname -m) dev_kvm=$([[ -r /dev/kvm && -w /dev/kvm ]] && echo read-write || echo unavailable)" \
         >"${results_dir}/kvm-status.txt"
+    echo "SKIP: the KVM comparison requires Linux/riscv64 and read-write /dev/kvm" >&2
+    exit 77
 fi
 
 echo "Recorded accelerator inventory and paused-vCPU observations in results/."

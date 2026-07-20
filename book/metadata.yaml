@@ -1,6 +1,6 @@
 ---
 title: 深入理解 QEMU 设计原理
-subtitle: 从对象模型、动态翻译到设备、I/O 与迁移
+subtitle: 从问题起点到 RISC-V 动态翻译、虚拟化与设备建模
 author:
   - 刘超、王振辰
 date: 持续更新

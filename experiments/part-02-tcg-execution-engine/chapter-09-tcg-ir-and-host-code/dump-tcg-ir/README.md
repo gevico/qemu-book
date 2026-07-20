@@ -2,7 +2,7 @@
 
 Status: runnable with a small RISC-V payload.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64`.
 
 ## Purpose
@@ -13,7 +13,8 @@ instruction selection for one short RISC-V code sequence.
 ## Prerequisites
 
 - `QEMU_SYSTEM_RISCV64` and `RISCV_GUEST_IMAGE`.
-- A disassembler for the current host architecture.
+- GNU `timeout`; a standalone host disassembler is optional because QEMU's
+  `out_asm` log already records the selected host instructions.
 
 ## Files
 

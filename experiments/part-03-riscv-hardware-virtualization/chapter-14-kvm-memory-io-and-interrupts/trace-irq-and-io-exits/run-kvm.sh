@@ -22,9 +22,10 @@ for tool in "${qemu}" timeout rg; do
     fi
 done
 
-if [[ ! -r /dev/kvm ]]; then
-    echo "this experiment requires a readable /dev/kvm on a RISC-V host" >&2
-    exit 2
+if [[ "$(uname -s)" != Linux || "$(uname -m)" != riscv64 || \
+      ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+    echo "SKIP: a Linux RISC-V host with read/write /dev/kvm is required"
+    exit 77
 fi
 if [[ ! -f "${kernel}" || ! -f "${initramfs}" ]]; then
     echo "missing guest kernel or initramfs" >&2

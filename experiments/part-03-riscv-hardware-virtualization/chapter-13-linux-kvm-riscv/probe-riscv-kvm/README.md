@@ -2,7 +2,7 @@
 
 Status: runnable only on a Linux RISC-V host with KVM enabled.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64`.
 
 ## Purpose

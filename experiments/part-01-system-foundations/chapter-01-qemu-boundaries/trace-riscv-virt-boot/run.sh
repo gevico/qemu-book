@@ -33,12 +33,16 @@ timeout "${BOOT_TIMEOUT_SECONDS:-10}" "${qemu}" \
     -kernel "${image}" -display none -serial none -monitor none -no-reboot \
     -d cpu_reset,in_asm -D "${results_dir}/boot.log" \
     2>"${results_dir}/qemu.stderr"
-status=$?
+qemu_exit_code=$?
 set -e
 
+if (( qemu_exit_code != 0 && qemu_exit_code != 124 )); then
+    echo "QEMU failed before the bounded collection ended (status ${qemu_exit_code})" >&2
+    exit 1
+fi
 if [[ ! -s "${results_dir}/boot.log" ]]; then
     echo "QEMU produced no reset/instruction trace" >&2
     exit 1
 fi
-echo "qemu_status=${status}" >"${results_dir}/status.txt"
+echo "qemu_status=${qemu_exit_code}" >"${results_dir}/status.txt"
 echo "Captured a bounded reset and instruction trace in results/boot.log."

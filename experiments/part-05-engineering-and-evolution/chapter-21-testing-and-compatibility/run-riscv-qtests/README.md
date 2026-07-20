@@ -2,7 +2,7 @@
 
 Status: runnable from a configured QEMU build.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64`.
 
 ## Purpose
@@ -14,6 +14,7 @@ source it protects.
 
 - `QEMU_SRC` and `QEMU_BUILD` from the same exact revision.
 - A build configured with RISC-V system emulation and qtests.
+- Python 3 and the `meson` command used by that configured build.
 
 ## Files
 

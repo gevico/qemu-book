@@ -3,17 +3,19 @@
 Status: runnable bare-metal counter guest and dependency-free QMP orchestrator
 for matching and deliberately mismatched RISC-V TCG pairs.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64` under TCG for host portability.
 
 ## Purpose
 
-Verify that a matching source/destination pair preserves a small guest's
-memory, CPU, timer, and device progress through migration.
+Verify that a matching source/destination pair preserves a small guest's RAM,
+CPU execution position, and ability to continue UART output through migration.
+The busy-loop counter has no active guest timer and does not certify general
+device-internal progress.
 
 ## Prerequisites
 
-- A QEMU `v11.1.0` system binary, RISC-V cross compiler, and Python 3.
+- A QEMU `v11.1.0-rc0` system binary, RISC-V cross compiler, and Python 3.
 - Enough host time for two single-threaded TCG VMs.
 - A dedicated result directory. The runner marks directories it creates and
   refuses a non-empty unmarked directory, symlinked log targets, and

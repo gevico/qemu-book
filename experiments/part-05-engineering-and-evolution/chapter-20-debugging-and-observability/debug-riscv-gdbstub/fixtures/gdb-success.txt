@@ -1,0 +1,4 @@
+Breakpoint 1, store_counter ()
+COUNTER_BEFORE=0
+S0_AT_STORE=1
+COUNTER_AFTER=1

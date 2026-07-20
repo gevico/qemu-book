@@ -22,9 +22,9 @@ check_count()
     fi
 }
 
-check_count "parts" 6 "${#part_readmes[@]}"
-check_count "chapters" 26 "${#chapter_readmes[@]}"
-check_count "projects" 52 "${#project_readmes[@]}"
+check_count "parts" 5 "${#part_readmes[@]}"
+check_count "chapters" 23 "${#chapter_readmes[@]}"
+check_count "projects" 51 "${#project_readmes[@]}"
 
 required_sections=(
     "Purpose"
@@ -35,6 +35,9 @@ required_sections=(
     "Cleanup"
     "Troubleshooting"
 )
+markdown_tick=$'\x60'
+qemu_release_pattern="QEMU ${markdown_tick}v11\\.1\\.0${markdown_tick}"
+qemu_baseline_pattern="${markdown_tick}v11\\.1\\.0-rc0${markdown_tick}"
 
 for manual in "${project_readmes[@]}"; do
     relative_manual="${manual#"${experiments_dir}/"}"
@@ -47,8 +50,8 @@ for manual in "${project_readmes[@]}"; do
         fi
     done
 
-    if ! grep -Eq 'QEMU `v11\.1\.0`' "${manual}" ||
-       ! grep -Eq '`v11\.1\.0-rc0`' "${manual}" ||
+    if ! grep -Eq "${qemu_release_pattern}" "${manual}" ||
+       ! grep -Eq "${qemu_baseline_pattern}" "${manual}" ||
        ! grep -Eq 'RISC-V|riscv64' "${manual}"; then
         printf 'missing baseline metadata: %s\n' "${relative_manual}" >&2
         status=1

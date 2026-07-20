@@ -29,7 +29,7 @@ fi
 
 mkdir -p "${results_dir}"
 "${qemu}" -machine virt -cpu rv64 -accel tcg -bios none \
-    -kernel "${image}" -S -gdb "tcp::${port}" \
+    -kernel "${image}" -S -gdb "tcp:127.0.0.1:${port}" \
     -display none -serial none -monitor none \
     >"${results_dir}/qemu.stdout" 2>"${results_dir}/qemu.stderr" &
 qemu_pid=$!

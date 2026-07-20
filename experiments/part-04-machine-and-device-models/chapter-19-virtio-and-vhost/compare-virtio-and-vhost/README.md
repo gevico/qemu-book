@@ -1,14 +1,18 @@
 # Compare virtio and vhost
 
-Status: runnable on Linux when the selected vhost backend is available.
+Status: fixed-source inspection and non-mutating backend preflight; the two-mode
+runtime comparison is a guided procedure requiring a user-supplied RISC-V
+guest, backend, and controlled workload.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64` guest.
 
 ## Purpose
 
-Compare an emulated virtio data path with a vhost-backed path and identify
-which setup, memory, notification, and migration work remains in QEMU.
+Prepare and review a controlled comparison between an emulated virtio data path
+and a vhost-backed path, then identify which setup, memory, notification, and
+migration work remains in QEMU. The committed files do not claim to launch the
+two workload runs themselves.
 
 ## Prerequisites
 
@@ -29,18 +33,23 @@ which setup, memory, notification, and migration work remains in QEMU.
 1. Set `QEMU_SRC` and run `./inspect-source.sh`. Run
    `./inspect_and_probe.py --qemu /path/to/qemu-system-riscv64` and inspect the
    backend permissions without changing them.
-2. Run a fixed workload with the QEMU-emulated virtio backend.
-3. Repeat with the corresponding vhost backend and identical guest-visible
-   configuration only when the preflight and host policy permit it.
+2. Write down the exact two QEMU commands before running them. They must differ
+   only in the chosen backend switch and host-only plumbing; save the expanded
+   commands under `results/emulated/` and `results/vhost/`.
+3. Run a fixed, self-checking RISC-V guest workload first with the QEMU-emulated
+   backend, then with the corresponding vhost backend only when preflight and
+   host policy permit it. Require the same guest checksum or marker in both.
 4. Compare correctness, QEMU thread activity, exits/notifications, and CPU use.
 5. Map retained control-plane work and delegated data-plane work using the
    generated source evidence.
 
 ## Expected results
 
-Both modes preserve the virtio guest contract; vhost moves selected data-path
-operations out of QEMU without eliminating QEMU's configuration and lifecycle
-responsibilities.
+The source and preflight stages produce an evidence inventory, not a runtime
+pass. A completed user-supplied comparison must show that both modes preserve
+the same guest checksum or marker; only then may it conclude that vhost moved
+selected data-path operations without eliminating QEMU's configuration and
+lifecycle responsibilities.
 
 ## Cleanup
 

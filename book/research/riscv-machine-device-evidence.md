@@ -47,9 +47,3 @@ Research anchor: QEMU `v11.1.0-rc0`, commit `eca2c16212ef9dcb0871de39bb9d1c2efeb
 - Current source: `hw/riscv/k230.c`, `include/hw/riscv/k230.h`, `hw/watchdog/k230_wdt.c`, `tests/qtest/k230-wdt-test.c`, `tests/functional/riscv64/test_k230.py`, and `docs/system/riscv/k230.rst`.
 - Review evolution: the series reached v8 and changed CPU extensions, PLIC/CLINT layout, reset vector handling, unimplemented UART behavior, hart count, direct boot, watchdog IRQ, and Machine interfaces.
 - **Strong inference:** the most useful K230 lesson is not its final device list. It is how firmware behavior, review evidence, and tests corrected a board model that looked plausible at earlier revisions.
-
-## Evidence boundary for G233
-
-- The official `v11.1.0-rc0` `hw/riscv/` and `target/riscv/` trees contain no G233 Machine.
-- It may be developed as a book-owned, out-of-tree experiment and compared with `virt`, K230, or the Xiangshan Kunminghu model, commit [`29abd3d1`](https://gitlab.com/qemu-project/qemu/-/commit/29abd3d112c380b8019a77ebad65f61addfb812d).
-- **Required wording:** G233 conclusions remain book implementation facts or author inferences until an upstream model and review exist.

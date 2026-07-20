@@ -7,7 +7,8 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 results_dir="${script_dir}/results"
 qemu_src="${QEMU_SRC:-}"
 
-if [[ -z "${qemu_src}" || ! -d "${qemu_src}/.git" ]]; then
+if [[ -z "${qemu_src}" ]] || \
+   ! git -C "${qemu_src}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "QEMU_SRC must point to a QEMU Git worktree" >&2
     exit 2
 fi

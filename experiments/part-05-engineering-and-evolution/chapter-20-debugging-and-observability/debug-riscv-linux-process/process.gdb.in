@@ -1,0 +1,28 @@
+# RISC-V Linux guest-process GDB template. Replace uppercase placeholders.
+set pagination off
+set confirm off
+set print pretty on
+file RISCV_USER_ELF_PATH
+set sysroot RISCV_GUEST_SYSROOT
+set solib-search-path RISCV_GUEST_SYSROOT/lib:RISCV_GUEST_SYSROOT/usr/lib
+target remote 127.0.0.1:1234
+
+# These are Linux threads in one inferior, not QEMU vCPU/hart threads and not
+# host QEMU pthreads.
+info inferiors
+info threads
+thread apply all bt
+info sharedlibrary
+info proc mappings
+info signals
+
+# Stop at a user-space symbol after the dynamic loader has established the
+# inferior. Validate library build IDs before trusting source lines.
+break main
+continue
+info threads
+thread apply all bt full
+
+# Detach keeps the guest process running; `kill` terminates it. Choose
+# explicitly, then stop the exact guest gdbserver and SSH tunnel separately.
+# detach

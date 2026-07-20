@@ -2,7 +2,7 @@
 
 Status: runnable with GDB and a RISC-V payload.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64`.
 
 ## Purpose
@@ -13,7 +13,8 @@ instruction executes.
 ## Prerequisites
 
 - `QEMU_SYSTEM_RISCV64`, `RISCV_GUEST_IMAGE`, and a RISC-V-capable GDB.
-- TCP port 1234 is unused.
+- `rg` for transcript assertions.
+- Loopback TCP port 1234 is unused; the runner never binds a wildcard address.
 
 ## Files
 
@@ -25,7 +26,7 @@ instruction executes.
 ## Steps
 
 1. Set `QEMU_SYSTEM_RISCV64`, `RISCV_GUEST_IMAGE`, and optionally `RISCV_GDB`.
-2. Run `./run.sh`; it uses port 1234 and writes the batch session to
+2. Run `./run.sh`; it binds `127.0.0.1:1234` and writes the batch session to
    `results/registers.txt`.
 3. Compare `initial-pc` with `after-step-pc` and the surrounding disassembly.
 4. The exit trap detaches GDB and terminates only the recorded child process.

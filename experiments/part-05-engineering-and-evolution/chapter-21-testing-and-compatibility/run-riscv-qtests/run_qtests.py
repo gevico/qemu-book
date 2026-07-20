@@ -58,7 +58,7 @@ def main() -> None:
     )
     if not selected:
         print("SKIP: configured build lists no RISC-V test")
-        return
+        raise SystemExit(77)
 
     completed = subprocess.run(
         ["meson", "test", "-C", str(build), "--print-errorlogs", "--verbose", *selected],

@@ -1,274 +1,210 @@
-# 调试、可观测性与性能分析
+# 从停住的 PC 到完整因果链：QEMU 调试方法
 
-凌晨两点，RISC-V `virt` 的串口停在 OpenSBI 最后一行。进程没有退出，一颗宿主 CPU 仍在忙，QMP 的 `query-status` 也返回 `running`。这几条现象放在一起，仍然无法说明客户机正在执行、死循环、等待中断，还是某个 vCPU 线程之外的 I/O 线程占满了处理器。若此时直接打开全部 `-d` 日志，数百万行 TB 输出会淹没异常入口，文件写入又可能改变线程调度，原先偶发的故障甚至会消失。
+凌晨两点，RISC-V `virt` 的串口停在 OpenSBI 最后一行。QEMU 进程仍在，宿主 CPU 也有负载。这个现场只能说明字符终端没有新输出：hart 也许停在 `wfi`，也许反复进入 trap，UART 也许根本没有收到写访问，I/O 线程还可能独自忙碌。若第一步就打开全部日志，几百万行 TB 输出会盖住真正的状态变化，额外 I/O 还会改变原来的时序。
 
-有效的调试从一个很窄的问题开始：停滞发生以后，谁拥有下一次可见进展所需的状态？CPU 要等中断，设备要等 doorbell，主循环要等文件描述符，还是宿主内核仍握着 KVM vCPU 的最新寄存器？问题写清以后，日志、trace、QMP、GDB 和宿主采样才有分工。它们看到的是同一进程的不同投影，时间尺度、稳定性与观察效应都不相同。
+调试 QEMU 需要同时辨认三套程序：客户机里的固件、内核或应用，QEMU 的设备与执行引擎，以及宿主内核里的 KVM、线程和后端。Monitor、日志、trace event、gdbstub 和宿主调试器分别从不同位置观察它们。本章把这些工具排成一条逐步收窄的路径，并始终使用 `v11.1.0-rc0`（commit `eca2c16212ef9dcb0871de39bb9d1c2efebe76be`）的 RISC-V 实现作为源码锚点。
 
-本章的源码口径固定为 QEMU `v11.1.0`，可审计锚点是官方 GitLab [`v11.1.0-rc0`](https://gitlab.com/qemu-project/qemu/-/tree/v11.1.0-rc0)，commit `eca2c16212ef9dcb0871de39bb9d1c2efebe76be`。正文中的“源码事实”只描述该锚点可确认的代码；提交说明和邮件中的理由标作“上游陈述”；把若干证据串起来得到的解释标作“作者推断”；仍缺运行证据或审查原文的内容保留为开放问题。
+## 停住的 PC 只是调查起点
 
-## 本章目标
+先把“系统卡住了”改写成可验证的问题。两次暂停之间，PC 有没有变化？若 PC 固定，它位于 `wfi`、异常入口、锁循环还是设备轮询？若 PC 在变化，变化发生在同一组地址，还是客户机仍在正常执行而输出路径断了？RISC-V 的 `sepc`、`scause`、`stval`、`sstatus` 与 `satp` 可以把异常进一步落到指令、原因、地址和翻译上下文。
 
-- 先按 CPU、设备、事件循环、后端和宿主内核划分状态所有者，再选择观测面；
-- 读懂 `-d` 日志、trace event、QMP/HMP、RISC-V GDB stub 与宿主采样各自提供的契约；
-- 区分 TCG 与 KVM 下寄存器、翻译状态和性能热点的权威来源；
-- 用两组可重复实验收敛 RISC-V 启动问题，并验证性能结论经得住单变量对照。
+接着寻找“谁拥有下一次进展”。CPU 等中断时，检查设备电平、中断控制器 pending/enable/threshold 和 CPU interrupt request；驱动轮询 MMIO 时，检查访问是否到达 [`MemoryRegionOps`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/include/system/memory.h)，以及回调更新了什么状态；后端未完成时，检查 AioContext、线程与文件描述符。每轮只验证一个预测。例如：“制造一次已知外部中断后，设备 pending 会先变化，随后 hart 离开 `wfi`。”pending 没变就回到设备，pending 已变而 PC 不动则继续查路由。
 
-## 先把“卡住”改写成状态问题
+这条链条有一个很实用的结构：输入、内部状态、输出。客户机写 doorbell 是输入，队列索引或 pending 位是内部状态，DMA、IRQ 或字符输出是结果。三个位置各留一个观测点，通常比在每个函数入口加打印更容易找到第一个偏离。
 
-终端没有新字符，只能证明字符后端没有交付新输出。它没有告诉我们 UART 是否收到写访问，FIFO 是否变化，IRQ 是否拉高，vCPU 是否仍退休指令。第一轮采集可以很克制：保存 QMP 运行状态，读取各 vCPU 的 PC，记录宿主线程栈或采样，再查看与串口、中断有关的少量事件。若两次采样之间 PC 在变化，方向偏向执行或循环；PC 固定在 `wfi`，方向转到中断；PC 固定在设备轮询循环，方向转到 MMIO 返回值和虚拟时间。
+## 先选观测面，再运行命令
 
-RISC-V 的 trap 状态给出更具体的切口。`sepc` 指向被打断或出错的位置，`scause` 说明异常或中断类型，`stval` 携带相关地址，当前特权级和虚拟化状态又决定应查 S 级页表还是 H 扩展的两阶段转换。把这些寄存器与 [`target/riscv/tcg/cpu_helper.c`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/target/riscv/tcg/cpu_helper.c) 的异常交付路径对上，才能讨论页表权限、G-stage fault 或中断委托。仅看到 trap vector 被反复命中，还不足以断言 QEMU 译码错误，客户机也可能有意重试同一条访问。
+不同工具回答的问题并不重合：
 
-设备侧同样要问“下一次状态变化由谁触发”。PLIC 或 APLIC/IMSIC 的 pending 位可能已经置位，但 enable、priority、threshold、target hart 或 CPU 中断输入不允许交付；virtio 队列可能已经收到通知，后端线程却未消费；定时器 compare 已经过期，虚拟时钟仍处于暂停状态。每种情况在串口上都像“没动”，可验证的中间状态却完全不同。
+| 要回答的问题 | 首选入口 | 典型产物 | 主要限制 |
+|---|---|---|---|
+| VM 是否运行、对象怎样连接 | HMP / QMP | 状态快照、对象树、事件 | 查询本身经过调度与锁 |
+| 某条翻译、异常或 MMU 分支是否发生 | `-d` / `-D` | 文本日志 | 输出量大，格式不适合作长期接口 |
+| 一次设备状态怎样跨组件传播 | trace event | 带字段的事件序列 | 时间相邻不自动构成因果 |
+| 客户机控制流和寄存器为何停在这里 | QEMU gdbstub | PC、寄存器、断点、内存 | 加速器决定可见能力 |
+| QEMU 自身为何崩溃、死锁或耗时 | 宿主 GDB / profiler | C/Rust 栈、线程、样本 | 看不到完整客户机语义 |
+| 客户机应用自身为何失败 | guest 内 GDB / gdbserver | 进程级符号与线程 | 看不到早期固件和设备模型内部 |
 
-宿主线程提供第三个维度。vCPU 线程可能在执行生成代码、停在 `poll`、等待 BQL，或卡在 KVM ioctl；I/O 线程可能处理块请求；主线程可能因同步 QMP 命令持有关键锁。线程处于运行态也不等于客户机有进展，它可能只是在打印日志、扫描 TB 或反复处理失败的事件。调试记录因此要同时写客户机时间、QEMU 单调时间和宿主采集时间，防止把不同时间域中的“先后”拼成一条虚假的因果链。
-
-一个可证伪假设至少包含观察对象、预期变化和反例。例如：“若客户机停在 `wfi` 是因为外部中断未送达，那么制造一个已知设备中断后，设备 pending 应先变化，随后 CPU interrupt request 与 PC 都应变化；若 pending 根本不变，应回到设备；若 pending 变而 CPU 侧不变，应检查中断控制器路由。”这种写法让每一步都有退出条件。模糊的“看看中断日志”会不停扩张，直到任何输出都能被解释成支持原判断。
+调查通常从低扰动快照开始，再升级到局部日志或 trace，最后才单步。发现 PC 停在驱动轮询时，gdbstub 能确认循环条件；需要知道轮询一秒发生多少次，trace 或采样更合适；需要知道 MMIO 返回值从哪个设备字段生成，再转到宿主源码和设备 trace。工具切换依据问题，而非个人习惯。
 
 :::: {.quick-quiz}
-为什么遇到卡死时不宜先打开全部 QEMU 日志？
+串口不再输出时，为什么不能直接认定客户机 CPU 已经停止？
 
 ::: {.quick-answer}
-全部日志会制造大量无关事件，文件 I/O 和格式化还会改变线程时序。先声明状态所有者与可证伪假设，再选择能观察 PC、异常、中断或事件循环的最小集合，证据才便于比较，也更不容易把观测扰动当成修复。
+串口只代表一条输出路径。hart 可能仍在执行，UART MMIO、字符后端或中断路径也可能单独失效。至少要交叉检查 PC/runstate、设备状态和宿主线程，才能判断进展停在哪个所有者手里。
 :::
 ::::
 
-## `-d` 日志适合回答什么
+## Monitor：先看机器仍处于什么状态
 
-当前源码在 [`include/qemu/log.h`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/include/qemu/log.h) 定义日志掩码，包括 TB 输入/输出汇编、TCG 操作、执行、异常、MMU、未实现行为、guest error、非法内存访问等类别；[`util/log.c`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/util/log.c) 管理输出文件、掩码和地址过滤。`qemu_log_mask()` 先检查类别，`qemu_log_mask_and_addr()` 还会检查调试地址范围。由此可确认：`-d` 不是单个“详细模式”，它是一组由调用点决定语义的文本通道。
+HMP 面向人在终端中探索。`info registers` 查看当前 CPU 状态，`info qom-tree` 看对象组成，`info mtree` 看地址空间，`stop`、`cont` 和 `system_reset` 控制运行边界。调查 RISC-V 地址翻译时，`gva2gpa` 可提供线索，但记录中仍要带 CPU、特权级、`satp`，涉及 H 扩展时还要带 `vsatp`、`hgatp` 和访问类型。同一个虚拟地址在不同 hart 和上下文里可以得到不同结果。
 
-调查 RISC-V 页表问题时，`-d int,mmu` 往往比 `-d in_asm,op,exec` 更靠近问题。前一组关注异常与转换，后一组可能为每个 TB 生成密集文本。若已经知道错误集中在一段 GPA 或 PC，地址过滤可以进一步压缩输出。日志文件用 `-D` 与串口分开，客户机输出保留原始字节流；否则控制台、guest error 和翻译信息交错，后续脚本很难判断某行来自哪一侧。
+QMP 使用 QAPI schema 表达命令、返回、错误和异步事件，适合自动采集。客户端先完成 `qmp_capabilities` 协商，每个请求带唯一 `id`，再保存 `query-status`、`query-cpus-fast` 及相关事件的原始 JSON。若需要较一致的断面，先发 `stop` 并等到停止事件，再查询 CPU 与设备，结束后按原 runstate 恢复。多个查询仍不是硬件级原子快照，报告要写清这一点。
 
-日志的结构化程度有限。字段只存在于格式字符串中，名称和布局通常服务于开发者阅读，脚本若按空格位置解析，很容易随一次诊断性改动失效。确实需要长期统计的状态转移，应考虑 trace event 或 QMP schema。临时 `qemu_log_mask()` 仍有价值，特别是某条错误分支尚无 trace point 时；补丁提交前要判断它是一次性探针、面向用户的 guest error，还是值得维护的事件接口。
+HMP 输出服务于阅读，列宽和措辞可能调整；自动化脚本应优先消费 QMP。QMP 并非绕过 QEMU 调度的窥视孔：请求先经过 dispatcher，再依据命令契约进入 BQL、coroutine 或目标子系统自己的同步边界；OOB 命令也不能被概括成与普通命令完全相同的加锁路径。高频事件不宜依赖密集轮询，可由 trace 承担数据流，QMP 只负责开启窗口、施加刺激和关闭窗口。
 
-多线程还带来一个很容易忽略的细节。提交 [`e43c8481`](https://gitlab.com/qemu-project/qemu/-/commit/e43c84813f96a496403a869973acd1a4278fec3c) 为日志 API 增加说明，上游提交信息明确指出：若一条消息被拆成多次 `qemu_log()` 输出，来自两个线程的片段可能交叉；需要连续构造一条消息时，应使用 `qemu_log_trylock()`、对返回的 `FILE` 写入，再调用 `qemu_log_unlock()`。这是上游陈述，也是当前头文件注释可确认的约束。看到半行字段错位时，先检查写法，别急着推断两个设备共享了损坏状态。
+## `-d` 与 `-D`：观察执行引擎的分支
 
-日志本身可能成为故障变量。热路径中一次字符串格式化会放大锁竞争，输出磁盘接近满载时，vCPU 进展可能被 I/O 限制；多线程程序的相对顺序也可能被日志锁重新排列。可重复报告至少保留日志类别、地址过滤、目标文件所在文件系统、是否每线程输出、文件大小和复现率。若“打开日志就不再失败”，这个结果应写成观察效应，而非“问题已经消失”。
+[`include/qemu/log.h`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/include/qemu/log.h) 定义了 `int`、`mmu`、`in_asm`、`op`、`exec`、`unimp`、`guest_errors`、`invalid_mem` 等日志类别。运行 `qemu-system-riscv64 -d help` 先读取当前二进制支持的名称，再按问题选择。异常或页表调查可以从 `-d int,mmu` 开始；TCG 翻译调查才考虑 `in_asm,op,op_opt`；设备非法访问更适合 `unimp,guest_errors,invalid_mem`。
 
-## trace event 是带字段的观测接口
+`-D qemu.log` 把 QEMU 日志与串口分开。若已知故障 PC 或地址区间，可配合地址过滤缩小记录。不要把 `-d exec` 当作通用“详细模式”，它能在短时间内产生大量输出；热路径的格式化和文件写入也会改变线程竞争。关闭日志后仍能复现，才说明探针没有成为修复条件。
 
-QEMU 的 trace event 在各子目录 `trace-events` 文件中声明，顶层 `meson.build` 的 `trace_events_subdirs` 决定哪些目录进入生成流程。构建时，`tracetool` 把声明转换成事件枚举、状态与 probe 函数；调用点包含本地 `trace.h`，例如某个 MMIO 路径调用 `trace_memory_region_ops_read()`。这些事实由 [`docs/devel/tracing.rst`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/docs/devel/tracing.rst) 和 `scripts/tracetool/` 共同确认。
+文本日志靠近分支，字段却没有稳定 schema。一次性调查可接受，长期统计应转成 trace event 或 QMP 字段。多线程代码若把一条消息拆成多次 `qemu_log()`，片段还可能交错；当前头文件提供 `qemu_log_trylock()`/`qemu_log_unlock()` 来保护需要连续构造的消息。半行错位首先是日志并发问题的线索，不能直接推出设备状态损坏。
 
-事件声明至少要经得住三个问题。第一，发生了什么状态变化，例如请求入队、完成、拉高中断；第二，怎样把两端关联起来，例如对象指针、队列号、地址或请求标识；第三，字段宽度是否跨宿主保持含义。文档建议对客户机地址使用固定宽度整数、给分配与释放保留 correlator，并把事件放在实际使用它的子目录。一个只有“entered function”且没有对象、方向和结果的事件，排查一次调用尚可，长期分析几乎无法建立上下文。
+## trace event：把状态转移串成数据链
 
-当前 [`trace/control.c`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/trace/control.c) 为事件组分配 ID，通过名称或 wildcard 遍历事件，并区分静态可追踪状态与动态启用状态。启动参数可以读取事件清单，行首 `-` 可在通配选择后排除噪声事件；Monitor 也能查询、启停事件。这里有两个边界：编译为不可追踪的事件不能靠运行时打开，某些后端也不实现全部动态控制能力。实验开始前应从当前二进制执行 `-trace help`，不能照抄另一个构建的事件名。
+QEMU 在各子目录的 `trace-events` 文件里声明事件，`tracetool` 在构建阶段生成 probe。当前 [`tracing.rst`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/docs/devel/tracing.rst) 建议记录状态变化、客户机操作和 correlator。一次 virtio 请求可以用队列号、descriptor 索引或对象标识连接“通知—取请求—完成—中断”；只记录“进入函数”很难区分请求代际。
 
-后端改变成本与分析方式。默认 `log` 后端把事件写到标准错误，操作直观，热路径开销和文本量随之上升；`simple` 后端用二进制文件记录，适合离线解析，解码时必须配同一次构建生成的 `trace-events-all`；`ftrace` 能把 QEMU 事件送进宿主 ftrace ring buffer，便于和调度、KVM 或块层事件对齐；`nop` 让事件被优化掉。选择后端属于实验设计的一部分，同一事件清单换后端以后，时序扰动和丢失条件可能已经变化。
+先执行：
 
-动态开关尤其适合捕捉短窗口。先让客户机稳定运行，QMP 开启一组设备或中断事件，执行一次受控 MMIO，再立即关闭。原始记录保留启停时间、刺激命令、事件字段和丢弃计数。若从进程启动就记录 `memory_region_ops_*`，固件枚举和启动噪声可能比目标访问多几个数量级。反过来，故障发生在 Machine realize 之前时，必须用启动事件文件提前开启，因为 QMP 通道尚未建立。
+```console
+$QEMU_SYSTEM_RISCV64 -trace help | rg 'riscv|memory_region|virtio|irq'
+```
 
-时间戳可以建立单个记录源看到的顺序，不能自动证明跨线程因果。事件 A 比 B 早一微秒，可能是 A 触发 B，也可能只是两个线程独立运行。要提出因果关系，还需关联字段、代码调用链和对照刺激。若设备请求带队列索引，后端完成带同一个请求标识，IRQ 更新又引用同一设备实例，这条链比三行相邻文本强得多。作者推断应明确写出连接依据，不能让排版上的相邻替代同步语义。
+启动早期故障用 `-trace events=events.txt,file=trace.log` 预先开启；运行期故障可在 HMP 中用 `info trace-events` 和 `trace-event NAME on|off` 划定窗口。默认 `log` 后端方便阅读，`simple` 后端适合低开销离线解析，`ftrace` 可与宿主调度/KVM 事件对齐。原始数据要连同该构建的 `trace-events-all` 保存。
 
-trace point 进入上游后会形成维护负担。事件名和字段被外部脚本使用，热路径多一个分支或 probe，敏感地址、数据和密钥又可能被带出进程。审查时要检查默认关闭成本、指针是否只用于相关性、客户机数据是否应脱敏、字段的架构宽度，以及重构函数后事件语义是否仍成立。这里的工程目标是可持续的观测面，不是把所有局部变量复制一份。
+时间戳只说明记录器看到的顺序。跨线程判断因果还需要相同请求标识、源码调用关系或受控刺激。两颗 hart 并发写设备时，最好由客户机加入序列号和正确的 RISC-V `fence`，设备侧记录实际消费的索引；否则三行相邻事件可能来自三笔请求。trace 也会泄露 GPA、队列和客户机数据，提交或公开故障报告前应删减敏感字段。
 
-## QMP、HMP 与控制面的时间语义
+## gdbstub：从寄存器走到第一条错误指令
 
-HMP 面向人在终端中探索，命令输出可以为可读性调整；QMP 使用 QAPI schema 描述命令、参数、返回、错误和异步事件，适合程序消费。自动化采集若解析 HMP 的列宽和自然语言，一次显示优化就可能被误报为行为回归。用 QMP 时也不能只保存 JSON 结果，客户端应完成 capability 协商，给请求使用唯一 `id`，区分命令响应与异步事件，并记录连接建立和命令发送时间。
+`-s` 是 `-gdb tcp::1234` 的简写，空 host 通常会监听通配地址，不能直接作为安全的默认示例。`-S` 让客户机在复位后暂停；下面把 TCP 明确限制在 loopback：
 
-[`monitor/qmp.c`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/monitor/qmp.c) 的当前实现包含请求队列、队列锁、dispatcher coroutine 与 out-of-band 能力。源码注释明确规定 `qmp_dispatcher_co_busy` 的原子同步含义，请求队列达到上限时 Monitor 可能暂停输入，清理队列后还要恢复。由此能够确认 QMP 不是绕过调度的“即时窥视孔”，一次同步命令可能等待 dispatcher、BQL 或目标子系统。命令返回时刻也不必等于客户机状态发生时刻。
+```console
+$QEMU_SYSTEM_RISCV64 -machine virt -cpu rv64 -accel tcg \
+    -m 128M -bios none -kernel guest.elf -S \
+    -gdb tcp:127.0.0.1:1234 -nographic
+$ riscv64-unknown-elf-gdb guest.elf
+(gdb) target remote localhost:1234
+(gdb) break trap_entry
+(gdb) continue
+(gdb) info registers pc sp ra sepc scause stval
+(gdb) x/8i $pc
+(gdb) x/16gx 0x80000000
+(gdb) stepi
+```
 
-QMP 适合建立可审计快照。调查迁移或 I/O 时，脚本可保存 `query-status`、`query-cpus-fast`、块设备状态、迁移状态以及相关异步事件，所有对象保留完整 JSON。若某命令触发状态变化，记录发送、响应和随后事件三类时间。对多个 vCPU 的查询通常不构成硬件意义上的原子快照；需要一致断面时，应先 `stop` 并确认 STOP 事件，再同步读取，实验结束按原 runstate 恢复。
+[`target/riscv/gdbstub.c`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/target/riscv/gdbstub.c) 暴露 x0–x31 和 PC，并按 CPU 配置增加浮点、Vector 与 CSR 描述。寄存器集合会随 XLEN、扩展和 accelerator 变化。当前锚点把 RISC-V CSR、virtual mode 以及动态 CSR feature 放在 `CONFIG_TCG` 内；因此“能连接 KVM vCPU”和“能以 TCG 的方式读取全部 CSR”不能合成一句话。
 
-HMP 仍然适合探索。开发者第一次遇到地址问题，可用 `info registers`、`gva2gpa` 或设备树相关命令快速观察，再把最终采集改写成 QMP、GDB 或脚本化 trace。提交 [`916acc25`](https://gitlab.com/qemu-project/qemu/-/commit/916acc253262cdf376c05478b65639f2ab5f8e2d) 修正 `gva2gpa` 曾经对输入输出做页对齐补偿的历史行为；随后 [`a4c857ae`](https://gitlab.com/qemu-project/qemu/-/commit/a4c857aef058fa7ccee50ea8d01bd78302ce032a) 让 HMP 调用 `cpu_translate_for_debug()`。上游提交说明表明，调试地址翻译 API 的精确地址语义经过演进。一本教程若只记命令名，不固定标签，页内偏移差异就可能被错误归因给 RISC-V MMU。
+| 调试能力 | RISC-V TCG | RISC-V KVM（固定基线） |
+| --- | --- | --- |
+| 软件断点 | 由 QEMU 管理客户机断点 | 支持通过改写客户机指令设置软件断点 |
+| 硬件断点、watchpoint | 由软件执行路径提供较完整的观察能力 | 目标实现仍留有 TODO，相关请求返回不支持 |
+| 单步 | 使用 TCG gdbstub 策略；`qqemu.sstep` 可调整 IRQ/timer mask | 依赖宿主 KVM single-step capability，不继承 TCG 的 IRQ/timer mask 语义 |
+| 扩展寄存器 | QEMU 用户态拥有架构状态，CSR 描述较完整 | 可见集合取决于 one-reg、同步点和 target gdbstub 路径 |
 
-实验脚本还要处理协议背压。高频事件和密集查询共用字符后端时，客户端不读数据会使发送路径堆积；持续轮询又可能增加 BQL 竞争。更稳妥的方式是低频快照配异步事件，把大流量交给 trace 后端，QMP 只做边界控制。若测试目标恰好是 Monitor 队列或 OOB 行为，则应单独设计负载，不能把调试客户端造成的阻塞混进设备性能结论。
+断点会改变执行。软件断点可能改写客户机内存；“单步默认抑制部分 IRQ/timer”特指 TCG gdbstub 的默认策略，只有这条路径才使用 `qqemu.sstep` 调整。KVM 单步与断点能力必须按宿主 capability 单独探测。普通单 cluster SMP 通常把各 hart 暴露为同一 inferior 的线程，GDB 调度设置决定继续一条还是全部线程；multi-cluster 还会形成多个 inferior，需要显式连接并使用 `set schedule-multiple on` 才能共同恢复。检查物理内存可切换 `qqemu.PhyMemMode`，切回虚拟模式后再读同一地址，避免把 GPA 与 GVA 混在记录里。
+
+## 三个 GDB 站在三条边界上
+
+QEMU gdbstub 调试客户机 CPU。它适合固件、内核、trap、页表和驱动与硬件交界处；它不了解 Linux 进程的完整调度语义，也不能解释 QEMU C 函数为何死锁。
+
+宿主侧 GDB 调试 QEMU 进程：
+
+```console
+$ gdb --pid "$(cat qemu.pid)"
+(gdb) info threads
+(gdb) thread apply all bt
+(gdb) break memory_region_dispatch_write
+```
+
+这里看到的是 vCPU 线程、I/O 线程、QOM 对象和 C/Rust 回调。TCG 生成代码中的宿主 PC 需要额外映射；KVM 运行时 vCPU 可能停在 `ioctl(KVM_RUN)`，客户机最新寄存器仍由内核持有。宿主 GDB 也会停止整个 QEMU 进程，时间敏感问题可能随之改变。
+
+guest 内 GDB 或 gdbserver 调试普通应用。它理解进程、共享库、线程和用户态符号，适合 Linux/RTOS 上已经建立调试通道的任务。QEMU 官方文档也建议：若问题只在客户机用户程序中，优先使用 guest 内调试；只有问题跨越系统调用、页表、驱动或设备时，再升到 gdbstub。三者可以配合，但每份断点记录都要注明它停住的是客户机 CPU、客户机进程还是 QEMU 宿主进程。
 
 :::: {.quick-quiz}
-自动化测试为什么应优先使用 QMP，而不是解析 HMP 输出？
+Linux 客户机中的一个应用崩溃，为什么通常先选 guest gdbserver？
 
 ::: {.quick-answer}
-QMP 用 QAPI 定义结构化请求、响应、事件和错误，脚本可以按字段与请求 ID 消费；HMP 的文本服务于人工阅读，列宽与措辞不是同等强度的兼容契约。QMP 仍受队列、锁与命令语义约束，使用者要记录时序，不能把响应当成瞬时原子快照。
+guest gdbserver 能直接使用进程、线程和共享库语义。QEMU gdbstub 停在虚拟 CPU 层，内核抢占和地址空间切换会让用户态跟踪变得困难；只有故障跨进内核、MMU 或设备模型时，才需要把观察面下移。
 :::
 ::::
 
-## RISC-V GDB stub：寄存器可见性也有加速器边界
+## 四类 guest 的调试入口
 
-当前 [`target/riscv/gdbstub.c`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/target/riscv/gdbstub.c) 为通用寄存器读取 x0 至 x31 与 PC，根据最大 XLEN 选择 32 或 64 位传输；浮点寄存器按已启用的 F/D 扩展注册；Vector feature 根据 `vlenb` 动态生成 32 个向量寄存器的目标描述。CSR feature 还会遍历 CSR 表，按照特权版本和 predicate 选择可访问项。这里的“动态”很重要，同一 GDB 客户端连接不同 CPU 配置，寄存器集合与宽度可能不同。
+bare metal 最适合建立第一套心智模型。保留带符号 ELF，使用 `-bios none -kernel guest.elf -S`，在 `_start`、trap vector 和 MMIO 写函数设断点。ELF 的链接地址要落在 `virt` RAM，GDB 读到的符号地址必须与 QEMU 装载位置一致。串口尚未初始化时，寄存器和内存仍可观察，所以它也是验证新设备模型的好入口。
 
-CSR 与虚拟化状态并非所有加速器都走同一实现。提交 [`002749d2`](https://gitlab.com/qemu-project/qemu/-/commit/002749d230f63ba32d24a3139b69e86fe8f0c808) 把 RISC-V GDB 的 CSR、virtual get/set 和动态 CSR feature 放进 `CONFIG_TCG` 条件。提交信息明确说这些函数只适用于 TCG，用在 KVM 会出错，并提出未来按 accelerator 拆分 gdbstub 的理由。因而在固定标签中，“GDB 能读 RISC-V 通用寄存器”与“GDB 能以同样方式读所有 CSR/虚拟化状态”是两条结论。
+RTOS 通常共享一个地址空间，却有调度器、tick 和多个任务。gdbstub可以看 hart 和异常，任务名、栈和就绪队列则依赖 RTOS 的 GDB awareness 或调试脚本。卡在 `wfi` 时同时检查 timer/IRQ trace；任务切换错误时保存调度器符号、当前任务指针和各任务栈。单步会改变 tick，重现竞态时应改用 trace 和逻辑序列号。
 
-TCG 执行时，架构状态主要在 `CPURISCVState`，GDB callback 可以直接访问同步的 `env`。KVM 执行时，最新 PC、GPR、Vector 或 CSR 可能仍在内核 vCPU，调试入口需要先走 accelerator 的同步协议；某字段没有对应 KVM get 路径时，用户态同名字段可能只是旧镜像。看到一个合理数值还不够，报告必须写加速器、暂停方式、同步调用和寄存器组来源。
+Linux 内核调试需要未剥离的 `vmlinux`，QEMU 仍装载 `Image` 或相应 ELF。地址随机化会使符号与运行地址错开，实验环境可用 `nokaslr`，并保留准确的内核配置。RISC-V 启动链依次经过复位代码、OpenSBI、内核入口与早期异常，断点应跟着当前阶段移动。内核已经启动后，`earlycon=sbi`、trace 与 `-d int,mmu` 可以分别验证输出、设备和异常。
 
-断点、单步和 watchpoint 的观察效应各不相同。单步让每条客户机指令都经过调试边界，虚拟定时器以及其他 vCPU 仍可能推进；软件断点会改写客户机内存，可能使自校验代码或只读映射表现变化；硬件能力又受目标和 accelerator 支持限制。多 hart 故障中，先决定只停当前 hart 还是停止整个 VM。只停一颗 vCPU 时，共享内存、中断和设备仍在变化，随后读取的几个寄存器不构成同一时刻的系统快照。
+一般 guest 包括发行版系统和任意可运行负载。应用问题留在 guest 内，驱动与设备交互问题用客户机日志加 QEMU trace，固件或内核早期问题再用 gdbstub。若只能拿到生产镜像，先复制为一次性镜像或 overlay，保存镜像哈希；调试器写内存、软件断点和故障注入都不应作用于唯一数据副本。
 
-GDB 最擅长回答控制流和架构状态问题。若 PC 在某个轮询循环，设置临时断点并读取循环条件，可以确认客户机为何继续；若要统计该循环一秒进入多少次，trace 或采样更合适；若要知道宿主时间花在生成代码、SoftTLB 还是锁等待，转向 profiler。工具切换的依据应是问题类型，避免让单步承担吞吐量测量，也避免从 flame graph 猜客户机寄存器。
+## TCG、KVM 与多 vCPU 改变可见性
 
-虚拟化状态还会改变寄存器解释。RISC-V GDB 的 virtual feature 用特权级与一个虚拟化位表示当前模式，TCG 写入模式时可能调用 `riscv_cpu_swap_hypervisor_regs()` 切换 HS/VS 视图。这个调试动作会改变状态，不能在只读调查中随意尝试。采集 H 扩展问题时，先读 `hstatus`、`vsstatus`、`vsepc` 等相关状态是否可见，再确认它们来自当前 accelerator 的权威路径；缺失字段应记录为观测缺口，不能用零补成“未启用”。
+TCG 中，RISC-V 架构状态主要位于 `CPURISCVState`，TB、SoftTLB 与 helper 都在 QEMU 进程里。gdbstub 可以提供大量软件实现的断点和 watchpoint，`-d in_asm,op` 也能看到翻译过程。KVM 中，大段客户机执行发生在硬件和宿主内核，用户态只有在退出或显式同步后取得状态；断点、watchpoint、CSR 和单步能力取决于 KVM 与 QEMU 的 accelerator 支持。
 
-## 地址翻译调试要保留上下文
+比较两条路径时，先比较端到端现象，再使用各自指标。TCG 关注 TB 生成、链接、SoftTLB 与 helper；KVM 关注 VM exit、设备模拟、irqchip 和宿主调度。KVM 下没有出现 TCG helper 调用，不能作为异常路径未执行的证据。一个故障只在某 accelerator 出现时，差异本身就是缩小所有权范围的线索。
 
-同一个虚拟地址可以在不同 hart、ASID、特权级和虚拟化上下文中映射到不同物理地址。记录 `gva2gpa` 结果时，至少带上 CPU 索引、当前 PC、priv/virt、`satp`，涉及 H 扩展时再带 `vsatp`、`hgatp` 与访问类型。读、写、取指的权限检查不完全相同，一个“debug translation”结果不能替代实际 load/store/fetch 的异常语义。
-
-调试 API 往往刻意减少副作用，它可能跳过普通执行中的某些访问、异常注入或缓存路径。由调试命令得到的 GPA 与真实访问一致，是待实验验证的行为，不应只凭函数名推定。最有力的对照是让客户机执行一条已知访问，同时 trace `riscv_cpu_tlb_fill()`、两阶段转换与异常交付，再把 GDB/HMP 的查询放在同一暂停点。若结果不同，先检查访问类型和虚拟化上下文。
-
-翻译缓存还会让“页表内存已经改了”与“CPU 下一条访问会看到新映射”分开。客户机是否执行 `sfence.vma`、`hfence.vvma` 或 `hfence.gvma`，QEMU 是否使对应 TLB/TB 失效，都会影响实际行为。直接读页表只证明内存值，不证明缓存视图。调试笔记应把页表内容、失效事件、TLB fill 与最终异常四列并排，遗漏哪一列都可能把客户机协议错误写成模拟器错误。
-
-## 从事件顺序走到性能证据
-
-性能问题先定义工作单位。一次 RISC-V 内核启动、十万次 MMIO、固定字节数的 virtio 传输、固定指令序列的 TCG 执行，各自需要不同分母。只写“CPU 占用 100%”没有可比意义，单核工作线程满载可能恰好是设计状态。基线应同时保存完成时间、吞吐量、客户机校验值、宿主 CPU 时间和方差，至少重复数次，确认结果没有被镜像缓存或首次 JIT 热身支配。
-
-TCG 的主成本可以分成翻译与执行。未命中的客户机 PC 需要译码、生成 TCG IR、优化、生成宿主代码并发布 TB；命中后进入已有 TB，内存访问还可能走 SoftTLB 快路径或 miss helper。宿主采样若热点落在 `translator_loop()`、TCG 优化器、代码生成或 TB 查找，说明该工作负载翻译占比显著；若大部分样本落在匿名可执行内存，说明生成代码在运行；若 `cputlb` 与 helper 占比高，再检查地址局部性、MMU 模式和访问宽度。
-
-采样器看到宿主地址，不能自动还原客户机语义。调试符号能命名 QEMU C 函数，却无法给每段 JIT 代码稳定命名；可用构建提供的 perf map、jitdump 或相关工具时，应把生成代码单独归类。没有这层支持，匿名区域不能一律算作“QEMU 开销”，它很可能正是客户机工作负载的翻译结果。结论应写成“样本分布”，随后用事件计数或改变量验证。
-
-KVM 的所有权不同。大段客户机执行发生在内核和硬件中，用户态热点更常出现在 VM exit、设备模拟、irqchip 协调、内存槽更新和宿主调度。相同的 `virt` 命令行换成 KVM 后，TCG 的 TB 指标失去意义；同一个 MMIO 密集负载又可能让 KVM 频繁退出，结果比纯计算负载差很多。两条加速路径可以比较端到端指标，但解释热点时必须各用自己的执行模型。
-
-单变量对照是因果的最低门槛。怀疑 MMIO 次数导致性能下降，可以固定镜像、vCPU、设备与工作量，只改变 batching 大小，再同时观察退出/trace 次数和耗时；怀疑 SoftTLB miss，可以固定指令数，只改变工作集或页表模式；怀疑日志锁，分别关闭日志、写入内存文件系统、保留同一事件刺激。变量一起变化时，即使结果更快，也说不清是哪条设计选择起作用。
-
-方差本身也有信息。首次运行慢、后两次稳定，可能是 TB 或宿主页缓存预热；长尾偶尔出现，可对齐宿主调度、I/O 完成和垃圾回收式批量工作；每次都在相同客户机计数点抖动，更像确定性设备事件。报告不要只留平均值，至少保存中位数、范围、每次原始数据与异常样本。删掉“看起来不正常”的一轮，会把最重要的并发线索抹掉。
+多 vCPU 的快照也有取舍。停止整个 VM 可读取较一致的寄存器和设备状态，却截断并发；只停一颗 hart，其他 hart 和设备继续修改共享内存。调试记录必须注明暂停范围。需要重现确定性执行时，可评估 TCG 的 `icount`/record-replay，但它受设备、时间源和配置限制，也不能把原有的多线程竞态原样保存成通用录像。
 
 :::: {.quick-quiz}
-一张宿主侧 flame graph 为什么不能单独证明 QEMU 存在设计缺陷？
+为什么 TCG 下读取到某个 CSR，不能推出 KVM 下同名 CSR 也具有相同可见性？
 
 ::: {.quick-answer}
-它只描述指定构建、配置和工作负载中的宿主样本分布，不包含客户机工作单位、等待关系或设计理由。还要有正确性校验、基线和方差、事件计数、源码所有权以及单变量对照，才能区分必要成本、真正瓶颈与观测噪声。
+TCG 的架构状态由 QEMU 用户态维护，KVM 的最新状态可能在宿主内核 vCPU。两条路径需要不同的同步和寄存器接口；当前 RISC-V 锚点还显式把一部分 CSR gdbstub 代码限定在 `CONFIG_TCG`。
 :::
 ::::
 
-## 把偶发错误变成可重复刺激
+## 证据要可复现，也要守住安全边界
 
-有些故障只在慢 I/O、特定中断窗口或多 hart 竞争下出现。等待生产负载“再撞一次”代价很高，可以在实验环境注入受控延迟或错误。提交 [`d5e40901`](https://gitlab.com/qemu-project/qemu/-/commit/d5e4090177ad382e01084a1594a1a60a69f4c1cd) 为 `blkdebug` 增加 `delay-ns`，上游提交信息直接说明其用途是复现依赖慢 I/O 的问题，并允许延迟后成功或失败。这里可借鉴的工程方法是把时间窗口写成配置，保存精确参数，再逐步缩小。
+每次调查保存 QEMU commit、构建摘要、完整命令、Machine/CPU/accelerator、固件/内核/DTB/镜像哈希、宿主内核和 vCPU 数。接着写故障判据、假设、预测顺序以及会推翻它的结果。原始 QMP JSON、trace、GDB 批处理输出和日志保持只读，分析脚本记录版本。修复以后关闭探针再跑一次，防止把观测扰动当成修复。
 
-故障注入要守住边界。注入延迟会改变队列深度、调度与超时，不代表生产环境根因就是“磁盘慢”；它只能验证某条竞态是否对窗口敏感。注入错误后，还要确认客户机和 QEMU 走的是预期恢复路径，不能把另一个提前失败当成复现。每轮记录刺激编号、开始/结束事件、客户机请求标识和最终状态，才能在多线程日志中对齐。
+gdbstub 没有认证、授权和加密，连接者可以控制客户机；QEMU 文档还特别提醒 TCG 调试接口不应被当作安全边界。实验优先使用权限受控的 Unix socket。若使用 TCP，只绑定隔离网络或 loopback，绝不把 `-s` 暴露到不可信网络。QMP、HMP、trace 与 core dump 同样可能泄露客户机内存、GPA 和后端路径，采集目录要有访问控制和保留期限。
 
-RISC-V 启动停滞可以设计成一条漏斗。先固定 OpenSBI、内核、DTB 与命令行哈希，确认 PC 是否离开 reset vector；到达 OpenSBI 后，按 trap 状态判断异常；进入 `wfi` 后，制造一个已知 timer 或外部中断，观察 pending、路由、CPU request 和 PC；进入 Linux 后无串口，再追 UART MMIO 与字符后端。每一级只有少量观测点，任何反例都会把调查带回上一级，而非继续堆日志。
+调试结束的判据也应明确：稳定刺激能够复现，最小观测面指出第一个错误状态转移，单一修正只改变该转移，关闭诊断后仍通过。若“加一行日志就不再出现”，当前只证明问题受时序影响；若补丁让系统启动，却没有找到第一个偏离，绕过症状的可能性仍在。
 
-设备问题也可用“写入—内部状态—输出”三段式采集。客户机写 doorbell 是输入，队列索引或 pending 位是内部状态，中断、DMA 或字符输出是结果。输入未出现，查客户机地址与映射；输入出现而状态不变，查设备回调；状态变化而结果缺失，查路由、后端与事件循环。三段中间各放一个稳定事件，比在每个函数入口放十个 print 更容易证明缺口落在哪里。
+## 六个实验把工具连起来
 
-## 案例：从 `wfi` 走到丢失的外部中断
+### 实验一：用 gdbstub 调试最小 RISC-V 裸机程序
 
-设想一颗 riscv64 hart 停在 supervisor `wfi`，串口也没有新输出。第一份记录只包含停止后的 PC、`sstatus`、`sie`、`sip`、`stvec` 与当前模式。PC 停在 `wfi` 说明软件主动等待，却没有说明 QEMU 卡死；若 `SIE` 被清除，客户机暂时不接收可屏蔽中断，即使设备已经产生事件也不会离开等待。先把客户机配置错误排除，可以省掉对中断控制器的大段跟踪。
+::: {.hands-on}
+配套英文实验手册：[`debug-riscv-gdbstub`](../experiments/part-05-engineering-and-evolution/chapter-20-debugging-and-observability/debug-riscv-gdbstub/README.md)。
 
-随后制造一个可编号的外设事件。PLIC 路径依次观察 source 电平、pending、对应 context 的 enable、priority/threshold、claim 结果和 CPU interrupt request；AIA 路径则按实际 Machine 配置观察 APLIC source、target、MSI 写入、IMSIC pending/enable 与 hart file。不同 irqchip 模式不能混用同一张字段表。事件到达 pending 而未到 CPU，故障窗口落在路由和门控；pending 都没有变化，继续检查设备输出以及 MemoryRegion/IRQ 连接。
+实验在 RISC-V `virt` 上运行一个带符号的最小循环。先执行静态检查；具备交叉 GCC、GDB 与 `qemu-system-riscv64` 时，构建 ELF，通过权限受控的 Unix gdb socket 启动 `-S`，在 `store_counter` 处停住，读取 PC、`s0` 和内存中的计数器，再单步一次 store。报告分别保存构建版本、GDB transcript 与 QEMU stderr。
+:::
 
-CPU 收到请求后仍不离开 `wfi`，再对照异常交付条件。TCG 中可跟踪 `riscv_cpu_exec_interrupt()` 与 `riscv_cpu_do_interrupt()`，确认 cause、delegation、目标特权级和 PC 更新；KVM 中则记录 vCPU 是否仍在 `KVM_RUN`、irqchip 模式和退出情况，不能把 TCG helper 未被调用当成异常。相同的架构现象经由两种 accelerator 实现，观察入口自然不同。
+### 实验二：跨过 OpenSBI 与 Linux 内核入口
 
-若 PC 离开 `wfi` 后又立即回来，问题已经变成“中断处理没有取得进展”。读取 claim/complete 和 handler 计数，确认客户机是否 claim 了错误 source，设备电平是否在 complete 后仍保持，或中断是否因状态未清除而反复触发。到这一步，串口沉默只是背景；真正的证据是一次中断从产生、门控、交付、claim 到 complete 的完整状态机。
+::: {.hands-on}
+配套英文实验手册：[`debug-riscv-linux-kernel`](../experiments/part-05-engineering-and-evolution/chapter-20-debugging-and-observability/debug-riscv-linux-kernel/README.md)。
 
-这个案例也展示负面事件的价值。“没有 CPU request”只有在我们确认采集窗口、trace 已开启、相同路径上的正向事件能够出现时才可信。若事件名在当前构建不可用，空文件不能证明路径未执行。先用一次已知正常中断验证探针，再运行故障刺激，负面证据才有参照。
+实验把可启动的 `Image`、带符号的 `vmlinux`，以及本次 boot path 实际使用的可选 OpenSBI/DTB 分别校验和记录。先在物理 kernel entry 检查 `a0` hart ID 和 `a1` DTB 指针，建立页表后再切到 `start_kernel`、`handle_exception` 等虚拟符号；KVM direct boot 另存一份 manifest，不能用 TCG/OpenSBI 的调用栈补齐缺失阶段。
+:::
 
-## 案例：MMIO 读值正确，启动仍然超时
+### 实验三：区分 RISC-V hart 与 RTOS task
 
-另一个常见场景中，客户机轮询设备 status，QEMU 日志显示每次读都返回预期完成位，Linux 却在稍后超时。读值正确只能证明回调在某个时刻给出了该数值。驱动也许需要完成位与 IRQ 同时出现，也许读取带有 clear-on-read 副作用，也许 status 对应的是上一笔请求，队列内的新请求仍未完成。调查要把请求身份带进事件，不能只比较寄存器十六进制值。
+::: {.hands-on}
+配套英文实验手册：[`inspect-riscv-rtos-tasks`](../experiments/part-05-engineering-and-evolution/chapter-20-debugging-and-observability/inspect-riscv-rtos-tasks/README.md)。
 
-先给客户机提交、MMIO doorbell、后端接收、后端完成、状态更新、IRQ 抬起和客户机确认建立相关键。virtqueue 可以使用队列索引和 descriptor 进度，块请求还可记录 sector/长度的脱敏摘要。若后端完成先于 status 更新，检查线程间发布；status 更新先于数据 DMA 可见，检查内存屏障与完成顺序；IRQ 已抬起而驱动未处理，再转向中断路由。把所有 `status=1` 聚合在一起，会丢掉请求代际。
+先把 QEMU gdbstub 的 `info threads` 当作 hart 视图，再在调度函数断点读取当前 TCB、保存的栈指针与任务名。启用 FreeRTOS、Zephyr 或其他 RTOS awareness 以后，新增 task 行必须能够回到本次构建的 scheduler 结构；来自调试插件的任务视图不能改写成 QEMU 原生线程。
+:::
 
-此时 QMP 查询设备状态可能有帮助，也可能太晚。同步查询要经过 Monitor 和锁，读到的是命令执行时的设备快照；一个微秒级脉冲可能早已结束。trace 适合捕捉过渡，QMP 适合确认持续状态，GDB 可在驱动分支上核对客户机判断。三个结果看似冲突时，先按采样时刻排序，别假定它们描述同一瞬间。
+### 实验四：在一般 Linux guest 内调试进程
 
-再做两项反证。第一，把 IRQ 路径关掉，让驱动只轮询；若仍超时，问题不在中断交付。第二，保持设备行为，延长或缩短后端延迟；若故障窗口随延迟单调变化，说明竞态与完成顺序相关，但尚未证明哪一方违反契约。最后回到设备规范和驱动预期，明确完成位、数据可见性与中断之间的顺序要求。
+::: {.hands-on}
+配套英文实验手册：[`debug-riscv-linux-process`](../experiments/part-05-engineering-and-evolution/chapter-20-debugging-and-observability/debug-riscv-linux-process/README.md)。
 
-## 观测多 vCPU 时，顺序需要同步含义
+实验让 guest `gdbserver` 只监听客户机 loopback，再经 SSH 隧道暴露到宿主 loopback。用匹配的 RISC-V ELF 和 sysroot 检查进程线程、共享库、信号与用户断点，同时分别记录 guest process、QEMU vCPU 和宿主 QEMU pthread 三种身份；只有证据跨进系统调用、驱动或设备时才切换调试层。
+:::
 
-两颗 hart 同时写共享设备时，文本时间戳很容易诱导错误叙述。hart 0 的 doorbell 先被记录，hart 1 的 descriptor 写却可能更早对设备可见；宿主线程的写缓冲、锁与 trace 后端会影响打印顺序。若要研究发布协议，应在客户机侧放序列号和内存屏障，在设备侧记录实际读取到的索引，必要时加锁事件或原子值。时间戳只负责告诉我们记录器看到了什么。
-
-暂停整个 VM 能取得较稳定的架构快照，却会截断正在进行的设备和后端操作。暂停单颗 hart 保留并发，又让共享状态继续变化。两种方法对应不同问题：检查寄存器一致性时倾向全停；研究竞态时保持运行，使用低扰动事件和逻辑序列号。报告中应写清暂停范围，避免后来把一个滑动快照当成全局原子状态。
-
-QMP 的命令顺序也只在协议与实现允许的范围内成立。客户端依次发送 A、B，普通 in-band dispatcher 会排队处理，但异步事件可能夹在响应之间，OOB 命令又有不同执行条件。若两个客户端同时连接，它们的请求还会汇入各自 Monitor 与共享子系统。自动化工具要按响应 `id` 配对，并把“发送顺序”“dispatcher 处理顺序”“目标状态变化顺序”分开记录。
-
-跨宿主 trace 时钟更要谨慎。迁移源端与目标端的单调时钟没有公共原点，即使都打印纳秒，也不能直接排序。可以在两边记录迁移协议事件、QMP 状态转换与各自时钟校准，再以协议阶段建立偏序。若分析只需要确认目标首个 vCPU 运行发生在设备加载之后，寻找同一进程内的恢复事件即可，无需制造虚假的全球统一时间轴。
-
-多线程日志中同一对象的指针常被用作 correlator，它只在该进程生命周期内有意义。进程重启或迁移后，数值相同不代表同一对象，数值不同也不代表客户机设备改变。长期记录应再带稳定设备路径、CPU index、队列号或迁移 section 名；指针用于一轮内部关联，不能成为跨运行身份。
-
-## 设计一个能留在上游的 trace point
-
-准备添加事件前，先检索相邻目录已有事件。QEMU 的 trace 声明按子目录组织，重复定义 `device_read` 一类宽泛名字，会让使用者无法判断层次。事件应落在拥有状态变化的代码旁，名称体现组件与动作，字段选择能关联前后步骤的最小集合。若已有 `memory_region_ops_read` 足以回答问题，再加设备入口事件只会重复热路径成本。
-
-状态改变通常比函数进入更稳定。函数可能因重构拆分、内联或改名，设备从“请求未完成”变为“完成并准备中断”的语义却会保留。记录 old/new 状态、请求标识和原因，往往能跨内部重构继续使用。错误路径要带错误类别和边界字段，但不宜直接输出未经限制的客户机缓冲区。
-
-字段宽度要按客户机语义选择。GPA、队列地址和寄存器值使用固定宽度类型，宿主 `long` 的大小不能决定 trace 格式；枚举值最好同时有稳定整数或清楚的字符串语义。若字段来自裸指针，确认它只作相关标识，不能被脚本解引用，也不要暗示跨进程稳定。格式串不带换行，由后端负责行结束，这是当前 tracing 文档明示的约束。
-
-热路径成本需要实测。事件默认关闭时仍可能保留动态状态检查，开启后还会执行参数准备与后端写入。补丁基准至少覆盖关闭和开启两种情况，工作负载选择能放大该路径的 RISC-V 场景。发现关闭也有可见回退时，可以调整事件位置、使用静态禁用属性或重新评估是否应进公共树。没有测到差异也要写分辨率与方差，不能只写“零开销”。
-
-评审材料应给一段真实输出和一个消费例子。维护者需要知道事件是否能回答明确问题，字段是否足够关联，是否与现有事件重叠。若事件仅为证明某个补丁，可先把它留在调试分支；若后续回归测试和运维分析都需要，长期接口的理由更充分。最终提交的 trace 名称、字段与文档才是源码事实，邮件初版中的方案仍需与合入版本核对。
-
-## 性能回归的二分与归因
-
-确认回归发生在两个 QEMU commit 之间以后，`git bisect` 可以缩小变化范围，但每个判定点都要有稳定基准。构建失败、测试不支持或结果落在噪声区间时，标作 skip，不能强迫归入 good/bad。阈值在开始前固定，例如中位数变化超过某比例且置信区间不重叠，同时客户机校验值一致。中途按结果调整阈值会偏向期待的提交。
-
-二分找到的第一个坏提交只是相关起点。它可能改变默认 Machine 属性、编译优化、线程拓扑或工作负载实际路径，未必是某个函数“变慢”。阅读 diff 时列出所有外部变量，重新用显式命令行固定默认值，再测一次。若回归消失，问题属于默认选择变化；若仍存在，再通过 trace 计数与采样定位成本增量。
-
-性能修复也要保护正确性。减少 TB 失效、合并 MMIO、缓存地址翻译或跳过状态同步，都可能依赖新的不变量。基准展示收益，单元/qtest/functional test 验证行为，提交说明应写优化成立的所有权条件。只看平均速度容易接受一项把罕见中断、迁移或调试路径弄坏的优化。
-
-比较 TCG 与 KVM 时，报告应把共享层和私有层分开。Machine、设备模型和部分 I/O 栈可以共享，CPU 执行、地址转换缓存和退出机制不同。端到端启动时间可以放在一张表里，内部事件则各列：TCG 列 TB 翻译、链接、SoftTLB；KVM 列运行时间、退出原因、内核 irqchip 和用户态模拟。强行换算成一个“每指令开销”，通常缺少可靠分母。
-
-最后做一次观测成本复测。无探针基线、最小事件、完整事件和 profiler 四种配置分别运行，比较吞吐、尾延迟和复现率。若完整 trace 让回归幅度翻倍，分析只能用来定位路径，不能直接报告生产影响。若最小事件几乎无扰动，它就适合作为未来回归的常驻诊断开关。
-
-## 可观测接口也要经过兼容性审查
-
-调试命令暴露的字段可能看似内部细节，却会被管理工具长期消费。提交 [`ad865ad7`](https://gitlab.com/qemu-project/qemu/-/commit/ad865ad765feb322a3f414c480dc57efaf78a529) 从实验性 `x-query-virtio-vhost-queue-status` 移除用户地址，上游说明这些内部字段有时表示虚拟地址、有时表示物理地址，语义复杂且即将变化，保留会造成误导。这个案例说明“多输出两个数字”不一定提升可观测性，字段含义不稳定时，删掉实验接口可能更诚实。
-
-稳定 QMP schema 的变化门槛高于实验性 `x-` 命令，trace event 又与 QMP 不同：它主要服务诊断和分析，仍要考虑已有脚本，但兼容承诺未必相同。普通日志的约束更松。新增观测面时，补丁说明应写目标用户、稳定等级、字段单位、时间域、失败语义与成本。若这些问题没有答案，先使用局部实验补丁，收集真实需求，再决定是否进入公共接口。
-
-安全同样不能留到最后。寄存器、GPA、队列内容、网络报文和块数据可能包含客户机秘密，trace 文件与 core dump 的权限往往比虚拟磁盘宽松。生产采集前做字段清单，能用对象 ID 就不记录完整数据，必要时限制采集窗口并加密归档。问题报告公开前保留版本、命令行和事件结构，敏感 payload 可以脱敏；整段删掉上下文则会让上游无法复查。
-
-性能观测接口还会形成产品行为。一个默认开启的热路径计数器增加缓存行竞争，跨线程全局统计可能比被测操作本身更贵；每 vCPU 计数减少竞争，却需要在读取时聚合。工程选择要用目标工作负载和基准支撑，不能因为“计数器很小”忽略共享写。若仅用于一次研究，把采样或静态 trace 放在实验分支，常比永久加入原子计数更合适。
-
-## 一份可复查的调试记录
-
-在真正写记录前，可以先做一次“观测面验收”。对日志，确认类别在当前二进制有效，输出文件可写，地址过滤命中了一个已知正常路径；对 trace，确认事件静态可用、动态开关生效、后端能够 flush，解码文件来自同一构建；对 QMP，确认 capability 协商、请求 ID 和异步事件处理；对 GDB，保存 target description，并在已知寄存器上验证读写宽度。探针没有经过正向校验时，空输出的证据强度接近于零。
-
-trace 丢失要单独检查。有界 buffer、后端写入速度和消费者读取速度都会造成缺口，某些后端只给告警，某些分析脚本又可能静默忽略截断尾部。可以在刺激前后放低频边界事件，比较预计请求数和实际完成数，并在结束时显式 flush。若中间序列缺失，报告写“采集不完整”；不要按相邻两条事件补画一条不存在的调用链。
-
-日志轮转也可能切断上下文。若文件按大小切换，相关请求的前半段和后半段落在不同文件；进程多次启动又可能复用同一名称。每次运行生成唯一目录，目录名包含 commit、实验编号和时间，原始文件只读保存。后处理脚本输出自己的版本与输入哈希，避免更新解析器后悄悄改变旧图表。
-
-对于 H 扩展问题，观测面验收还要确认虚拟化上下文。一个 G-stage guest page fault 至少涉及 VS 访问、`vsatp` 产生的第一阶段结果、`hgatp` 第二阶段、`htval`/`htinst` 等归因信息以及 HS trap 入口。TCG 可沿 RISC-V helper 和 CSR 观察；KVM 的最新状态可能在内核，寄存器组能力也受宿主 UAPI 限制。两边都出现同名 CSR，不代表采集路径等价。
-
-调查两阶段翻译时，可以准备两个相邻 GPA 页，只让一个页在 G-stage 可访问。客户机 VS 中执行同样宽度的 load，正常页建立基线，受限页应产生指定 fault。采集实际访问类型、两个页表根、fault 地址、目标特权级和 TLB 失效。若调试翻译命令返回地址，而真实访问 fault，不应立刻判定 QEMU 自相矛盾；debug translation 与有副作用的执行访问可能使用不同权限语义，需要回到调用路径确认。
-
-并发故障还可用“停止世界”和“连续观测”交叉验证。第一次在故障判据出现后立即 QMP `stop`，读取一致快照；第二次保持运行，用低频 trace 捕捉状态过渡。快照说明最终停在哪里，连续记录说明怎样到达。若两者无法连接，通常缺了一个状态所有者或记录窗口，而非需要再打开全部日志。
-
-调试收敛的另一个信号是待解释事件逐轮减少。第一轮可能有五个可能所有者，第二轮确认设备 pending 正确，第三轮确认 CPU request 出现，只剩异常委托；下一轮就不再采集块层和字符后端。保留被排除路径及其证据，避免团队成员隔天从头重开所有探针。若新数据推翻旧排除，再明确写哪项前提失效。
-
-什么时候可以结束调查？至少满足四项：故障有稳定刺激或清楚的出现概率，最小观测面能定位第一个错误状态转移，对照修改只改变该转移且修复结果，关闭诊断探针后仍通过。只有“加一行日志后不再复现”时，调查还停留在时序敏感阶段；只有“补丁让启动成功”却没有第一个偏离点时，修复可能只是绕过症状。
-
-补丁提交后，保留一个成本合适的回归观测点。它可以是 qtest 断言、functional test 的客户机判据、现有 trace event 或精确错误消息。临时的高密度日志可移除，证据链写进 commit message 与测试。这样后续重构碰到同一不变量时，失败会落在可定位的边界，调试经验才真正进入工程体系。
-
-记录顶部写固定信息：QEMU commit 与配置摘要、RISC-V CPU model、accelerator、Machine 参数、固件/内核/DTB/磁盘哈希、宿主内核、vCPU/线程拓扑。命令行要保存展开后的实际值，环境变量另列。若使用本地补丁，附补丁哈希与工作树状态。缺少这些信息，后来出现同名 `virt` 属性变化时，旧结果很难重现。
-
-第二部分写问题和判据。一句话描述外部现象，再写当前假设、预测的状态顺序、会推翻它的结果。每个观测点标工具、字段、时间域和所有者。例：“trace 中 UART 写事件存在，设备 IRQ pending 变为一，CPU interrupt request 未变化”；这比“中断似乎坏了”更方便另一位开发者接手。
-
-第三部分保留原始材料与转换脚本。trace 二进制要配 `trace-events-all`，QMP 保存原始 JSONL，GDB 命令使用批处理文件，perf 数据保留采样频率和符号构建。图表属于派生产物，旁边写生成命令。若只剩截图，筛选、聚合和丢失事件都无法审查。
-
-最后写反证。哪些假设被数据排除，哪些只得到弱支持，哪些观测会改变时序，是否能在关闭探针后复现。开放问题可以具体到“rc0 的 KVM RISC-V GDB 路径是否能为该 CSR 提供权威同步”，不要用“可能还有并发问题”收尾。下一轮实验只针对仍开放的一项，调试才会持续收敛。
-
-## 实验一：用最小 trace 还原一次状态转移
+### 实验五：用窄 trace 观察一次 reset
 
 ::: {.hands-on}
 配套英文实验手册：[`use-qemu-tracing`](../experiments/part-05-engineering-and-evolution/chapter-20-debugging-and-observability/use-qemu-tracing/README.md)。
 
-使用固定的 `qemu-system-riscv64`、`virt` 配置和一个可重复的小型客户机。先执行 `-trace help` 保存当前二进制事件清单，提出一个只跨两到三个组件的问题，例如“一次 MMIO 写是否到达设备，并导致 IRQ 状态改变”。从实际事件名中选择输入、内部状态和输出各一个，启动早期问题通过事件文件开启，运行期问题通过 Monitor 在刺激前后动态开关。
-
-每轮只执行一次刺激，保存原始 trace、`trace-events-all`、QEMU 命令行与客户机校验值。给事件按对象或地址做关联，不因时间相邻就断言因果。随后关闭一个观测点重复，比较复现率与时延；若 log 后端扰动明显，再换 simple 后端，记录后端变化。最终报告分别列源码事实、上游文档约束、由序列得到的作者推断，以及仍缺少 correlator 的开放问题。
+脚本先从当前二进制取得事件清单，只启用实际存在的 reset/runstate 事件，再通过 Monitor 执行一次 `system_reset`。阅读事件定义与调用点，确认哪些行表示刺激、内部状态和结果。若时间戳相邻但没有 correlator，结论保留为顺序观察。
 :::
 
-## 实验二：给 TCG 热点建立反证
+### 实验六：给 TCG 热点建立反证
 
 ::: {.hands-on}
 配套英文实验手册：[`profile-tcg-workload`](../experiments/part-05-engineering-and-evolution/chapter-20-debugging-and-observability/profile-tcg-workload/README.md)。
 
-准备带调试符号的 QEMU，固定 RISC-V 客户机镜像、`-accel tcg`、vCPU 数、内存和工作单位。客户机每轮完成同样计算并输出校验和，先测至少三次基线，分开记录首轮与热身后的时间。宿主采样限定固定窗口，把 QEMU 已命名函数、生成代码、内核等待与未知样本分别归类。
-
-选择一个热点提出解释，再改变一个变量验证。例如怀疑 SoftTLB miss，保持指令和数据总量，改变工作集跨页方式；怀疑翻译成本，保持总工作量，改变代码复用；怀疑日志，保持事件刺激，只切换日志输出。每种配置重复采样并保存方差。结论只能覆盖该工作负载，flame graph 与源码调用链一致仍算强推断，除非上游提交或基准明确给出相同设计理由。
-:::
-
-## 证据边界与开放问题
-
-固定源码能够确认日志掩码与地址过滤、trace 的声明和动态状态、QMP 请求队列、RISC-V GDB 的寄存器组，以及 TCG 条件下的 CSR/virtual callback。提交与邮件能够确认日志分片的线程问题、RISC-V GDB 的 accelerator 隔离、调试地址翻译 API 的演进。它们没有自动证明某次现场采集读到了同一时刻，也没有证明某个热点源自错误设计。
-
-本章的强推断有三项。第一，从状态所有者开始能减少无关观测面；第二，事件接口的字段与 correlator 比函数入口日志更适合长期分析；第三，TCG 与 KVM 的执行所有权变化要求不同的性能指标。三项都能被实验支持，却不应冒充某位维护者的原话。
-
-开放问题随构建与宿主变化：KVM 下某个 RISC-V CSR 是否有完整调试同步，某种 trace 后端在高负载时会不会丢事件，OOB QMP 是否适合特定故障注入，以及新版本是否重构了 Monitor/GDB 边界。研究报告要把问题限定到具体 commit、配置与 capability，未来答案变化时，旧证据仍然成立。
-
-还应避免把“当前没有公共观测点”写成“内部没有该状态”。状态可能只存在于内核、设备后端或局部变量，也可能能由别的字段重建。负面源码搜索只能说明在固定路径和符号范围内没有找到接口。若该状态决定客户机行为，下一步是沿写入者、读取者和生命周期寻找权威所有者，再判断应补同步、trace、QMP，还是只在测试中增加断言。
-
-反过来，公共字段存在也不保证它适合判定正确性。实验性查询可能暴露内部缓存，HMP 可能格式化旧镜像，计数器可能在多个线程间近似聚合。使用前阅读 schema、注释和 get 路径，确认刷新时机与单位；找不到这些契约时，把结果降为线索。可观测性最容易制造的误会，正是把一个方便取得的数字当成系统真相。
-
-::: {.source-path}
-本章当前源码入口为 [`util/log.c`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/util/log.c)、[`include/qemu/log.h`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/include/qemu/log.h)、[`trace/`](https://gitlab.com/qemu-project/qemu/-/tree/v11.1.0-rc0/trace)、[`monitor/`](https://gitlab.com/qemu-project/qemu/-/tree/v11.1.0-rc0/monitor)、[`qapi/`](https://gitlab.com/qemu-project/qemu/-/tree/v11.1.0-rc0/qapi)、[`target/riscv/gdbstub.c`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/target/riscv/gdbstub.c) 与 [`docs/devel/tracing.rst`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/docs/devel/tracing.rst)。所有体系结构相关示例均使用 RISC-V/riscv64；性能记录必须注明 TCG 或 KVM，不能把两条路径的宿主样本解释为同一种执行模型。
+固定 RISC-V 镜像、工作量和 TCG 配置，采样三轮宿主 profile。把翻译、生成代码、SoftTLB/helper、等待和未知样本分开，再只改变一个变量验证解释。火焰图提供样本分布；客户机校验值、方差、trace 计数和源码调用链共同决定结论强度。
 :::
 
 ## 小结
 
-QEMU 的调试材料总会比根因多。先定位状态所有者，再写能被推翻的预测，日志、trace、QMP、GDB 和采样器才会形成一条收窄的证据链。日志靠近代码分支，trace 给出带字段的事件，QMP 管理结构化控制面，GDB 暴露架构状态，宿主采样描述成本分布；每一种工具也会带来自己的时序和兼容边界。
+QEMU 调试的难点在于同一现象横跨多套状态所有者。Monitor 给出机器和控制面，`-d` 靠近执行分支，trace event 记录带字段的状态转移，gdbstub观察客户机 CPU，guest gdb理解客户机进程，宿主 GDB 与 profiler解释 QEMU 进程。先问“下一次进展由谁产生”，再选择一个能推翻假设的观测点，材料会逐轮减少。
 
-RISC-V 还提醒我们，寄存器名相同不等于数据来源相同。TCG 的 `CPURISCVState` 与 KVM 内核 vCPU 具有不同所有权，固定标签中的 GDB CSR 支持已经显式按 TCG 隔离。性能分析也遵守同一原则：先确认执行发生在哪里，再选择指标。这样得到的报告或许没有“一键全开”那样壮观，却能让下一位读者沿命令、事件、源码和提交逐项复查。
+RISC-V 也把 accelerator 边界暴露得很清楚。TCG 和 KVM 可以运行同一台 `virt`，寄存器所有权、断点能力和性能指标却不同。把版本、加速器、暂停范围和时间域写进记录，停住的 PC 才会沿设备、IRQ、trap 和线程逐步连成可复查的因果链。

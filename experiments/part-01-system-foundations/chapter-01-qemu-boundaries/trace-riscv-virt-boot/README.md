@@ -2,7 +2,7 @@
 
 Status: runnable with a RISC-V kernel or bare-metal ELF image.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64`.
 
 ## Purpose
@@ -14,6 +14,7 @@ construction, and payload entry.
 
 - `QEMU_SYSTEM_RISCV64` and a reproducible image in `RISCV_GUEST_IMAGE`.
 - The image is disposable and its load convention is known.
+- GNU `timeout`; `readelf` is optional for troubleshooting the image header.
 
 ## Files
 
