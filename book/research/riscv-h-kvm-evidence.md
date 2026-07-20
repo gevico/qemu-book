@@ -73,7 +73,7 @@ The `v11.1.0-rc0` tree proves the first execution/control path and contains an H
 
 ## Nested virtualization and migration: open boundary
 
-- Current source conflict: [`vmstate_hyper`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/target/riscv/machine.c#L76) serializes H/VS state for the TCG architectural model, while KVM's `kvm_csr_cfgs` exposes only supervisor CSRs and the current [`linux-headers/asm-riscv/kvm.h`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/linux-headers/asm-riscv/kvm.h#L44) has no H/VS CSR group.
+- Current source conflict: the common RISC-V CPU [`vmstate_hyper`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/target/riscv/machine.c#L87) serializes H/VS state; TCG can supply the corresponding `env` fields, while KVM's `kvm_csr_cfgs` exposes only supervisor CSRs and the current [`linux-headers/asm-riscv/kvm.h`](https://gitlab.com/qemu-project/qemu/-/blob/v11.1.0-rc0/linux-headers/asm-riscv/kvm.h#L44) has no H/VS CSR group.
 - Linux nested KVM [27-patch v1 series](https://lists.infradead.org/pipermail/linux-riscv/2026-January/084034.html), also on [Patchew](https://patchew.org/linux/20260120080013.2153519-1-anup.patel%40oss.qualcomm.com/), explicitly says that v1 cannot yet run L2; G-stage walking, HLV/HSV, Sstc, and other work remained.
 - **Fact:** an H extension enum does not prove complete nested execution or migration.
 - **Status:** write as **under development / to be verified**, never as supported behavior in the research baseline.
@@ -81,5 +81,5 @@ The `v11.1.0-rc0` tree proves the first execution/control path and contains an H
 ## In-kernel AIA migration: open boundary
 
 - Current source enables APLIC/IMSIC VMState only when the respective state is in userspace; the rc0 KVM AIA path does not show extraction/restoration of all in-kernel runtime state.
-- A later, not-in-rc0 [AIA save/restore v3 series](https://patchew.org/QEMU/20260602142709086IsQxEt0LYI9ygtpFnj-XN%40zte.com.cn/) adds KVM AIA register access and pre-save/post-load work.
+- An AIA save/restore [v3 series submitted before rc0](https://patchew.org/QEMU/20260602142709086IsQxEt0LYI9ygtpFnj-XN%40zte.com.cn/), but not merged into that tag, adds KVM AIA register access and pre-save/post-load work.
 - **Status:** this is a migration support gap to test and track, not enough evidence by itself to claim a reproducible bug in every configuration.

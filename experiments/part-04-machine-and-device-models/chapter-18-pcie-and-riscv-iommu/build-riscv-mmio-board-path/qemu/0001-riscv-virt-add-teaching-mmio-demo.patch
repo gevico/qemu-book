@@ -1,0 +1,480 @@
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 23265f6..76b3ef9 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -31,6 +31,7 @@ system_ss.add(when: 'CONFIG_VIRT_CTRL', if_true: files('virt_ctrl.c'))
+ system_ss.add(when: 'CONFIG_MCHP_PFSOC_DMC', if_true: files('mchp_pfsoc_dmc.c'))
+ system_ss.add(when: 'CONFIG_MCHP_PFSOC_IOSCB', if_true: files('mchp_pfsoc_ioscb.c'))
+ system_ss.add(when: 'CONFIG_MCHP_PFSOC_SYSREG', if_true: files('mchp_pfsoc_sysreg.c'))
++system_ss.add(when: 'CONFIG_RISCV_VIRT', if_true: files('qb_mmio_demo.c'))
+ system_ss.add(when: 'CONFIG_SIFIVE_TEST', if_true: files('sifive_test.c'))
+ system_ss.add(when: 'CONFIG_SIFIVE_E_PRCI', if_true: files('sifive_e_prci.c'))
+ system_ss.add(when: 'CONFIG_SIFIVE_E_AON', if_true: files('sifive_e_aon.c'))
+diff --git a/hw/misc/qb_mmio_demo.c b/hw/misc/qb_mmio_demo.c
+new file mode 100644
+index 0000000..691a360
+--- /dev/null
++++ b/hw/misc/qb_mmio_demo.c
+@@ -0,0 +1,170 @@
++/*
++ * QEMU Book teaching MMIO device
++ *
++ * This is a deliberately small teaching model, not an upstream device ABI.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "hw/misc/qb_mmio_demo.h"
++#include "migration/vmstate.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++
++struct QBMMIODemoState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion mmio;
++    qemu_irq irq;
++    uint32_t control;
++    uint32_t data;
++    bool pending;
++};
++
++static void qb_mmio_demo_update_irq(QBMMIODemoState *s)
++{
++    bool level = s->pending &&
++                 (s->control & QB_MMIO_DEMO_CONTROL_IRQ_ENABLE);
++
++    qemu_set_irq(s->irq, level);
++}
++
++static uint64_t qb_mmio_demo_read(void *opaque, hwaddr offset,
++                                  unsigned int size)
++{
++    QBMMIODemoState *s = opaque;
++
++    switch (offset) {
++    case QB_MMIO_DEMO_REG_ID:
++        return QB_MMIO_DEMO_ID_VALUE;
++    case QB_MMIO_DEMO_REG_CONTROL:
++        return s->control;
++    case QB_MMIO_DEMO_REG_STATUS:
++        return s->pending ? QB_MMIO_DEMO_STATUS_PENDING : 0;
++    case QB_MMIO_DEMO_REG_DATA:
++        return s->data;
++    default:
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "%s: bad read at offset 0x%" HWADDR_PRIx "\n",
++                      TYPE_QB_MMIO_DEMO, offset);
++        return 0;
++    }
++}
++
++static void qb_mmio_demo_write(void *opaque, hwaddr offset, uint64_t value,
++                               unsigned int size)
++{
++    QBMMIODemoState *s = opaque;
++
++    switch (offset) {
++    case QB_MMIO_DEMO_REG_CONTROL:
++        s->control = value & QB_MMIO_DEMO_CONTROL_MASK;
++        break;
++    case QB_MMIO_DEMO_REG_STATUS:
++        if (value & QB_MMIO_DEMO_STATUS_PENDING) {
++            s->pending = false;
++        }
++        break;
++    case QB_MMIO_DEMO_REG_DATA:
++        s->data = value & QB_MMIO_DEMO_DATA_MASK;
++        break;
++    case QB_MMIO_DEMO_REG_DOORBELL:
++        if ((value & 1) &&
++            (s->control & QB_MMIO_DEMO_CONTROL_ENABLE)) {
++            s->pending = true;
++        }
++        break;
++    default:
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "%s: bad write at offset 0x%" HWADDR_PRIx "\n",
++                      TYPE_QB_MMIO_DEMO, offset);
++        return;
++    }
++
++    qb_mmio_demo_update_irq(s);
++}
++
++static const MemoryRegionOps qb_mmio_demo_ops = {
++    .read = qb_mmio_demo_read,
++    .write = qb_mmio_demo_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {
++        .min_access_size = 4,
++        .max_access_size = 4,
++        .unaligned = false,
++    },
++};
++
++static void qb_mmio_demo_reset_enter(Object *obj, ResetType type)
++{
++    QBMMIODemoState *s = QB_MMIO_DEMO(obj);
++
++    s->control = 0;
++    s->data = 0;
++    s->pending = false;
++}
++
++static void qb_mmio_demo_reset_hold(Object *obj, ResetType type)
++{
++    QBMMIODemoState *s = QB_MMIO_DEMO(obj);
++
++    qb_mmio_demo_update_irq(s);
++}
++
++static int qb_mmio_demo_post_load(void *opaque, int version_id)
++{
++    QBMMIODemoState *s = opaque;
++
++    qb_mmio_demo_update_irq(s);
++    return 0;
++}
++
++static const VMStateDescription vmstate_qb_mmio_demo = {
++    .name = TYPE_QB_MMIO_DEMO,
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .post_load = qb_mmio_demo_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT32(control, QBMMIODemoState),
++        VMSTATE_UINT32(data, QBMMIODemoState),
++        VMSTATE_BOOL(pending, QBMMIODemoState),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static void qb_mmio_demo_init(Object *obj)
++{
++    QBMMIODemoState *s = QB_MMIO_DEMO(obj);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
++
++    memory_region_init_io(&s->mmio, obj, &qb_mmio_demo_ops, s,
++                          TYPE_QB_MMIO_DEMO, QB_MMIO_DEMO_MMIO_SIZE);
++    sysbus_init_mmio(sbd, &s->mmio);
++    sysbus_init_irq(sbd, &s->irq);
++}
++
++static void qb_mmio_demo_class_init(ObjectClass *oc, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(oc);
++    ResettableClass *rc = RESETTABLE_CLASS(oc);
++
++    dc->vmsd = &vmstate_qb_mmio_demo;
++    rc->phases.enter = qb_mmio_demo_reset_enter;
++    rc->phases.hold = qb_mmio_demo_reset_hold;
++}
++
++static const TypeInfo qb_mmio_demo_info = {
++    .name = TYPE_QB_MMIO_DEMO,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(QBMMIODemoState),
++    .instance_init = qb_mmio_demo_init,
++    .class_init = qb_mmio_demo_class_init,
++};
++
++static void qb_mmio_demo_register_types(void)
++{
++    type_register_static(&qb_mmio_demo_info);
++}
++
++type_init(qb_mmio_demo_register_types)
+diff --git a/hw/riscv/virt.c b/hw/riscv/virt.c
+index 51bac47..d31071c 100644
+--- a/hw/riscv/virt.c
++++ b/hw/riscv/virt.c
+@@ -44,6 +44,7 @@
+ #include "hw/intc/riscv_aplic.h"
+ #include "hw/intc/sifive_plic.h"
+ #include "hw/misc/sifive_test.h"
++#include "hw/misc/qb_mmio_demo.h"
+ #include "hw/core/platform-bus.h"
+ #include "chardev/char.h"
+ #include "system/device_tree.h"
+@@ -86,6 +87,7 @@ static const MemMapEntry virt_memmap[] = {
+     [VIRT_DEBUG] =        {        0x0,         0x100 },
+     [VIRT_MROM] =         {     0x1000,        0xf000 },
+     [VIRT_TEST] =         {   0x100000,        0x1000 },
++    [VIRT_QB_MMIO_DEMO] = { 0x10010000,        0x1000 },
+     [VIRT_RTC] =          {   0x101000,        0x1000 },
+     [VIRT_CLINT] =        {  0x2000000,       0x10000 },
+     [VIRT_ACLINT_SSWI] =  {  0x2F00000,        0x4000 },
+@@ -718,6 +720,31 @@ static void create_fdt_virtio(RISCVVirtState *s, uint32_t irq_virtio_phandle)
+     }
+ }
+ 
++static void create_fdt_qb_mmio_demo(RISCVVirtState *s,
++                                    uint32_t irq_mmio_phandle)
++{
++    MachineState *ms = MACHINE(s);
++    g_autofree char *name = NULL;
++
++    name = g_strdup_printf("/soc/qb-mmio-demo@%" HWADDR_PRIx,
++                           s->memmap[VIRT_QB_MMIO_DEMO].base);
++    qemu_fdt_add_subnode(ms->fdt, name);
++    qemu_fdt_setprop_string(ms->fdt, name, "compatible",
++                            "qemu,qb-mmio-demo");
++    qemu_fdt_setprop_sized_cells(ms->fdt, name, "reg",
++                                 2, s->memmap[VIRT_QB_MMIO_DEMO].base,
++                                 2, s->memmap[VIRT_QB_MMIO_DEMO].size);
++    qemu_fdt_setprop_cell(ms->fdt, name, "interrupt-parent",
++                          irq_mmio_phandle);
++    if (s->aia_type == VIRT_AIA_TYPE_NONE) {
++        qemu_fdt_setprop_cell(ms->fdt, name, "interrupts",
++                              QB_MMIO_DEMO_IRQ);
++    } else {
++        qemu_fdt_setprop_cells(ms->fdt, name, "interrupts",
++                               QB_MMIO_DEMO_IRQ, 0x4);
++    }
++}
++
+ static void create_fdt_pcie(RISCVVirtState *s,
+                             uint32_t irq_pcie_phandle,
+                             uint32_t msi_pcie_phandle,
+@@ -987,6 +1014,10 @@ static void finalize_fdt(RISCVVirtState *s)
+ 
+     create_fdt_virtio(s, irq_virtio_phandle);
+ 
++    if (s->qb_mmio_demo) {
++        create_fdt_qb_mmio_demo(s, irq_mmio_phandle);
++    }
++
+     if (virt_is_iommu_sys_enabled(s)) {
+         create_fdt_iommu_sys(s, irq_mmio_phandle, msi_pcie_phandle,
+                              &iommu_sys_phandle);
+@@ -1471,6 +1502,12 @@ static void virt_machine_init(MachineState *machine)
+     /* SiFive Test MMIO device */
+     sifive_test_create(s->memmap[VIRT_TEST].base);
+ 
++    if (s->qb_mmio_demo) {
++        sysbus_create_simple(TYPE_QB_MMIO_DEMO,
++            s->memmap[VIRT_QB_MMIO_DEMO].base,
++            qdev_get_gpio_in(mmio_irqchip, QB_MMIO_DEMO_IRQ));
++    }
++
+     /* VirtIO MMIO devices */
+     for (i = 0; i < VIRTIO_COUNT; i++) {
+         sysbus_create_simple("virtio-mmio",
+@@ -1623,6 +1660,20 @@ static bool virt_get_aclint(Object *obj, Error **errp)
+     return s->have_aclint;
+ }
+ 
++static bool virt_get_qb_mmio_demo(Object *obj, Error **errp)
++{
++    RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
++
++    return s->qb_mmio_demo;
++}
++
++static void virt_set_qb_mmio_demo(Object *obj, bool value, Error **errp)
++{
++    RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
++
++    s->qb_mmio_demo = value;
++}
++
+ static void virt_set_aclint(Object *obj, bool value, Error **errp)
+ {
+     RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
+@@ -1751,6 +1802,12 @@ static void virt_machine_class_init(ObjectClass *oc, const void *data)
+                                           "enable/disable emulating "
+                                           "ACLINT devices");
+ 
++    object_class_property_add_bool(oc, "qb-mmio-demo",
++                                   virt_get_qb_mmio_demo,
++                                   virt_set_qb_mmio_demo);
++    object_class_property_set_description(oc, "qb-mmio-demo",
++                                          "Enable the teaching MMIO device");
++
+     object_class_property_add_str(oc, "aia", virt_get_aia,
+                                   virt_set_aia);
+     object_class_property_set_description(oc, "aia",
+diff --git a/include/hw/misc/qb_mmio_demo.h b/include/hw/misc/qb_mmio_demo.h
+new file mode 100644
+index 0000000..f219dec
+--- /dev/null
++++ b/include/hw/misc/qb_mmio_demo.h
+@@ -0,0 +1,33 @@
++/*
++ * QEMU Book teaching MMIO device
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef HW_MISC_QB_MMIO_DEMO_H
++#define HW_MISC_QB_MMIO_DEMO_H
++
++#include "qemu/bitops.h"
++#include "hw/core/irq.h"
++#include "hw/core/sysbus.h"
++
++#define TYPE_QB_MMIO_DEMO "qb-mmio-demo"
++OBJECT_DECLARE_SIMPLE_TYPE(QBMMIODemoState, QB_MMIO_DEMO)
++
++#define QB_MMIO_DEMO_MMIO_SIZE      0x1000
++#define QB_MMIO_DEMO_ID_VALUE       0x51424d4d
++
++#define QB_MMIO_DEMO_REG_ID         0x00
++#define QB_MMIO_DEMO_REG_CONTROL    0x04
++#define QB_MMIO_DEMO_REG_STATUS     0x08
++#define QB_MMIO_DEMO_REG_DATA       0x0c
++#define QB_MMIO_DEMO_REG_DOORBELL   0x10
++
++#define QB_MMIO_DEMO_CONTROL_ENABLE      BIT(0)
++#define QB_MMIO_DEMO_CONTROL_IRQ_ENABLE  BIT(1)
++#define QB_MMIO_DEMO_CONTROL_MASK        0x3
++
++#define QB_MMIO_DEMO_STATUS_PENDING      BIT(0)
++#define QB_MMIO_DEMO_DATA_MASK           0xff
++
++#endif
+diff --git a/include/hw/riscv/virt.h b/include/hw/riscv/virt.h
+index 36a2def..3c6a89b 100644
+--- a/include/hw/riscv/virt.h
++++ b/include/hw/riscv/virt.h
+@@ -52,6 +52,7 @@ struct RISCVVirtState {
+     DeviceState *irqchip[VIRT_SOCKETS_MAX];
+     PFlashCFI01 *flash[2];
+     FWCfgState *fw_cfg;
++    bool qb_mmio_demo;
+ 
+     int fdt_size;
+     bool have_aclint;
+@@ -71,6 +72,7 @@ enum {
+     VIRT_DEBUG,
+     VIRT_MROM,
+     VIRT_TEST,
++    VIRT_QB_MMIO_DEMO,
+     VIRT_RTC,
+     VIRT_CLINT,
+     VIRT_ACLINT_SSWI,
+@@ -94,6 +96,7 @@ enum {
+ enum {
+     UART0_IRQ = 10,
+     RTC_IRQ = 11,
++    QB_MMIO_DEMO_IRQ = 12,
+     VIRTIO_IRQ = 1, /* 1 to 8 */
+     VIRTIO_COUNT = 8,
+     PCIE_IRQ = 0x20, /* 32 to 35 */
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index 56ff860..7bdc223 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -293,6 +293,7 @@ qtests_riscv32 = \
+   (config_all_devices.has_key('CONFIG_SIFIVE_E_AON') ? ['sifive-e-aon-watchdog-test'] : [])
+ 
+ qtests_riscv64 = ['riscv-csr-test'] + \
++  (config_all_devices.has_key('CONFIG_RISCV_VIRT') ? ['qb-mmio-demo-test'] : []) + \
+   (unpack_edk2_blobs ? ['bios-tables-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
+    config_all_devices.has_key('CONFIG_RISCV_IOMMU') ?
+diff --git a/tests/qtest/qb-mmio-demo-test.c b/tests/qtest/qb-mmio-demo-test.c
+new file mode 100644
+index 0000000..0c95377
+--- /dev/null
++++ b/tests/qtest/qb-mmio-demo-test.c
+@@ -0,0 +1,97 @@
++/*
++ * QEMU Book teaching MMIO device qtest
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "libqtest.h"
++#include "hw/misc/qb_mmio_demo.h"
++
++#define QB_MMIO_DEMO_BASE      0x10010000
++#define VIRT_PLIC_PENDING_BASE 0x0c001000
++#define VIRT_QB_MMIO_DEMO_IRQ  12
++
++static QTestState *qb_mmio_demo_start(void)
++{
++    return qtest_init("-machine virt,qb-mmio-demo=on -display none");
++}
++
++static void test_opt_in_default(void)
++{
++    QTestState *qts = qtest_init("-machine virt -display none");
++
++    g_assert_cmphex(qtest_readl(qts, QB_MMIO_DEMO_BASE +
++                                QB_MMIO_DEMO_REG_ID), !=,
++                    QB_MMIO_DEMO_ID_VALUE);
++
++    qtest_quit(qts);
++}
++
++static void test_register_masks(void)
++{
++    QTestState *qts = qb_mmio_demo_start();
++
++    g_assert_cmphex(qtest_readl(qts, QB_MMIO_DEMO_BASE +
++                                QB_MMIO_DEMO_REG_ID), ==,
++                    QB_MMIO_DEMO_ID_VALUE);
++
++    qtest_writel(qts, QB_MMIO_DEMO_BASE + QB_MMIO_DEMO_REG_CONTROL,
++                 0xffffffff);
++    g_assert_cmphex(qtest_readl(qts, QB_MMIO_DEMO_BASE +
++                                QB_MMIO_DEMO_REG_CONTROL), ==,
++                    QB_MMIO_DEMO_CONTROL_MASK);
++
++    qtest_writel(qts, QB_MMIO_DEMO_BASE + QB_MMIO_DEMO_REG_DATA,
++                 0xffffffff);
++    g_assert_cmphex(qtest_readl(qts, QB_MMIO_DEMO_BASE +
++                                QB_MMIO_DEMO_REG_DATA), ==,
++                    QB_MMIO_DEMO_DATA_MASK);
++
++    qtest_quit(qts);
++}
++
++static void test_pending_irq_and_reset(void)
++{
++    QTestState *qts = qb_mmio_demo_start();
++    uint32_t pending;
++
++    qtest_writel(qts, QB_MMIO_DEMO_BASE + QB_MMIO_DEMO_REG_CONTROL,
++                 QB_MMIO_DEMO_CONTROL_ENABLE |
++                 QB_MMIO_DEMO_CONTROL_IRQ_ENABLE);
++    qtest_writel(qts, QB_MMIO_DEMO_BASE + QB_MMIO_DEMO_REG_DOORBELL, 1);
++
++    g_assert_cmphex(qtest_readl(qts, QB_MMIO_DEMO_BASE +
++                                QB_MMIO_DEMO_REG_STATUS), ==,
++                    QB_MMIO_DEMO_STATUS_PENDING);
++    pending = qtest_readl(qts, VIRT_PLIC_PENDING_BASE);
++    g_assert_cmphex(pending & BIT(VIRT_QB_MMIO_DEMO_IRQ), !=, 0);
++
++    qtest_writel(qts, QB_MMIO_DEMO_BASE + QB_MMIO_DEMO_REG_STATUS,
++                 QB_MMIO_DEMO_STATUS_PENDING);
++    g_assert_cmphex(qtest_readl(qts, QB_MMIO_DEMO_BASE +
++                                QB_MMIO_DEMO_REG_STATUS), ==, 0);
++
++    qtest_writel(qts, QB_MMIO_DEMO_BASE + QB_MMIO_DEMO_REG_DATA, 0x5a);
++    qtest_system_reset(qts);
++    g_assert_cmphex(qtest_readl(qts, QB_MMIO_DEMO_BASE +
++                                QB_MMIO_DEMO_REG_CONTROL), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, QB_MMIO_DEMO_BASE +
++                                QB_MMIO_DEMO_REG_DATA), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, QB_MMIO_DEMO_BASE +
++                                QB_MMIO_DEMO_REG_STATUS), ==, 0);
++
++    qtest_quit(qts);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++
++    qtest_add_func("/qb-mmio-demo/opt-in-default", test_opt_in_default);
++    qtest_add_func("/qb-mmio-demo/register-masks", test_register_masks);
++    qtest_add_func("/qb-mmio-demo/pending-irq-reset",
++                   test_pending_irq_and_reset);
++
++    return g_test_run();
++}

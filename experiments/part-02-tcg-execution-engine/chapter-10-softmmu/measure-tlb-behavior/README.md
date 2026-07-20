@@ -3,7 +3,7 @@
 Status: runnable direct-map reference model with fixed-tag source checks. It is
 not presented as a live QEMU TLB-miss counter.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64`.
 
 ## Purpose

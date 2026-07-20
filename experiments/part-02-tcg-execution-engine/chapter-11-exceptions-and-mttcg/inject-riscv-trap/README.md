@@ -2,7 +2,7 @@
 
 Status: runnable bare-metal RISC-V M-mode trap fixture for TCG.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64`.
 
 ## Purpose

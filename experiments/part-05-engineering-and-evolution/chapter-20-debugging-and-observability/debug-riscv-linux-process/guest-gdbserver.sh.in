@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+# RISC-V Linux guest command template. Replace uppercase placeholders.
+# SPDX-License-Identifier: Apache-2.0
+
+set -eu
+
+# Record identity before stopping the process. The host-side user ELF hash must
+# match this RISC-V guest binary.
+uname -a
+gdbserver --version
+sha256sum -- GUEST_PROGRAM_PATH
+readelf -n GUEST_PROGRAM_PATH | sed -n '/Build ID/p'
+
+# Launch a new inferior. Guest gdbserver binds guest loopback only; reach it
+# through the host-loopback SSH tunnel documented in README.md.
+exec gdbserver --once 127.0.0.1:2345 GUEST_PROGRAM_PATH PROGRAM_ARGUMENTS
+
+# Attach alternative; use this instead of the exec line above, never both.
+# exec gdbserver --once --attach 127.0.0.1:2345 GUEST_PID

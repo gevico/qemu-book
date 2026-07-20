@@ -9,6 +9,7 @@ qemu="${QEMU_SYSTEM_RISCV64:-}"
 kernel="${GUEST_KERNEL:-}"
 disk="${GUEST_DISK:-}"
 disk_format="${GUEST_DISK_FORMAT:-qcow2}"
+guest_request_marker="${GUEST_REQUEST_MARKER:-}"
 
 if [[ -z "${qemu}" || ! -x "${qemu}" ]]; then
     echo "QEMU_SYSTEM_RISCV64 must name an executable QEMU binary" >&2
@@ -20,6 +21,10 @@ for guest_file in "${kernel}" "${disk}"; do
         exit 2
     fi
 done
+if [[ -z "${guest_request_marker}" ]]; then
+    echo "GUEST_REQUEST_MARKER must identify the controlled guest request" >&2
+    exit 2
+fi
 if ! command -v timeout >/dev/null 2>&1; then
     echo "GNU timeout is required" >&2
     exit 2
@@ -28,15 +33,18 @@ mkdir -p "${results_dir}"
 "${qemu}" -trace help >"${results_dir}/trace-help.txt"
 events=(virtqueue_pop virtqueue_fill virtqueue_flush virtio_queue_notify virtio_notify virtio_blk_handle_read virtio_blk_handle_write virtio_blk_req_complete)
 trace_args=()
+selected_events=()
 for event in "${events[@]}"; do
     if rg -q "^${event}$" "${results_dir}/trace-help.txt"; then
         trace_args+=( -trace "enable=${event}" )
+        selected_events+=( "${event}" )
     fi
 done
 if (( ${#trace_args[@]} == 0 )); then
     echo "no selected virtqueue event is available" >&2
     exit 1
 fi
+printf '%s\n' "${selected_events[@]}" >"${results_dir}/selected-events.txt"
 
 set +e
 timeout "${TRACE_SECONDS:-45}" "${qemu}" \
@@ -47,8 +55,26 @@ timeout "${TRACE_SECONDS:-45}" "${qemu}" \
     -display none -serial stdio -monitor none -no-reboot \
     "${trace_args[@]}" -trace "file=${results_dir}/virtqueue.trace" \
     >"${results_dir}/serial.log" 2>"${results_dir}/qemu.stderr"
-status=$?
+qemu_exit_code=$?
 set -e
-echo "${status}" >"${results_dir}/status.txt"
+echo "${qemu_exit_code}" >"${results_dir}/status.txt"
+if (( qemu_exit_code != 0 && qemu_exit_code != 124 )); then
+    echo "QEMU failed before the bounded virtqueue trace ended (status ${qemu_exit_code})" >&2
+    exit 1
+fi
 test -s "${results_dir}/virtqueue.trace"
-echo "Captured available virtqueue and virtio-blk ownership transitions."
+if ! rg -F -q -- "${guest_request_marker}" "${results_dir}/serial.log"; then
+    echo "the controlled guest request marker was not observed" >&2
+    exit 1
+fi
+if ! rg -q 'virtqueue_pop|virtio_blk_handle_(read|write)' \
+        "${results_dir}/virtqueue.trace"; then
+    echo "the trace contains no request-acquisition event" >&2
+    exit 1
+fi
+if ! rg -q 'virtio_blk_req_complete|virtqueue_(fill|flush)' \
+        "${results_dir}/virtqueue.trace"; then
+    echo "the trace contains no request-completion event" >&2
+    exit 1
+fi
+echo "Captured both acquisition and completion sides of one controlled request."

@@ -3,7 +3,7 @@
 Status: reviewable QEMU patch, executable encoding tests, and a bare-metal smoke
 guest for a deliberately private opcode.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64`.
 
 ## Purpose

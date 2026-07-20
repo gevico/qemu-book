@@ -2,7 +2,7 @@
 
 Status: runnable on a host with a sampling profiler.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64` guest under TCG.
 
 ## Purpose
@@ -12,8 +12,11 @@ for one fixed RISC-V workload without treating a flame graph as design intent.
 
 ## Prerequisites
 
-- Debug-symbol QEMU build and a host profiler such as Linux `perf`.
-- A deterministic `RISCV_GUEST_IMAGE` workload with fixed work units.
+- Debug-symbol QEMU build, Linux `perf`, GNU `timeout`, `rg`, and either
+  `sha256sum` or `shasum`.
+- A deterministic `RISCV_GUEST_IMAGE` workload with fixed work units, a known
+  SHA-256, and a unique serial marker that proves the workload made the
+  intended progress.
 
 ## Files
 
@@ -23,10 +26,12 @@ for one fixed RISC-V workload without treating a flame graph as design intent.
 
 ## Steps
 
-1. Set `QEMU_SYSTEM_RISCV64` and `RISCV_GUEST_IMAGE`; record the workload's
-   correctness checksum separately, then run `./profile.sh`.
-2. The script samples the bounded TCG process three times without changing the
-   guest command.
+1. Set `QEMU_SYSTEM_RISCV64`, `RISCV_GUEST_IMAGE`,
+   `EXPECTED_IMAGE_SHA256`, and `GUEST_WORKLOAD_MARKER`, then run
+   `./profile.sh`.
+2. The script validates the image hash, samples the bounded TCG process three
+   times without changing the guest command, and requires the progress marker
+   in every serial log.
 3. Separate generated-code samples from named QEMU functions where supported.
 4. Map hot named functions to translation, execution, and memory paths; repeat
    three times before interpreting proportions.

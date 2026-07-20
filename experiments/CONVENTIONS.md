@@ -32,9 +32,11 @@ scripts, firmware, kernels, or device models already exist.
 
 ## Reproducibility
 
-The book targets QEMU `v11.1.0`; the source-review anchor is
-`v11.1.0-rc0`. Prefer an exact commit ID in result records. Architecture-
-specific examples use RISC-V, normally `riscv64` and the `virt` machine.
+The book targets the QEMU `v11.1.0` release line; the source-review baseline as
+of 2026-07-19 is `v11.1.0-rc0`. This label records the tree used to check source
+anchors; it does not claim that every live experiment has run on every required
+host. Prefer an exact commit ID in result records. Architecture-specific
+examples use RISC-V, normally `riscv64` and the `virt` machine.
 
 Use the following environment variables rather than embedding workstation
 paths:
@@ -49,6 +51,12 @@ export RISCV_GUEST_IMAGE=/absolute/path/to/a/reproducible/guest-image
 Each lab must identify optional dependencies and provide a skip condition when
 the host lacks KVM, tracing support, a RISC-V cross-toolchain, or a suitable
 guest image.
+Executable runners report that condition with exit status `77`; printing
+`SKIP` while returning success is not a completed live experiment.
+
+Record source inspection, unit/model tests, and live guest execution as
+separate evidence classes. A manual's `runnable` status means its inputs and
+procedure are specified, not that a successful runtime result is committed.
 
 ## Safety
 

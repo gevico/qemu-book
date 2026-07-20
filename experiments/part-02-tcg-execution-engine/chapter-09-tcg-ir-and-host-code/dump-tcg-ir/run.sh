@@ -28,8 +28,12 @@ timeout "${TRACE_SECONDS:-3}" "${qemu}" \
     -bios none -kernel "${image}" -display none -serial none -monitor none \
     -d in_asm,op,op_opt,out_asm -D "${results_dir}/tcg.log" \
     2>"${results_dir}/qemu.stderr"
-status=$?
+qemu_exit_code=$?
 set -e
+if (( qemu_exit_code != 0 && qemu_exit_code != 124 )); then
+    echo "QEMU failed before the bounded collection ended (status ${qemu_exit_code})" >&2
+    exit 1
+fi
 test -s "${results_dir}/tcg.log"
-echo "qemu_status=${status}" >"${results_dir}/status.txt"
+echo "qemu_status=${qemu_exit_code}" >"${results_dir}/status.txt"
 echo "Captured guest assembly, pre/post optimization IR, and host assembly."

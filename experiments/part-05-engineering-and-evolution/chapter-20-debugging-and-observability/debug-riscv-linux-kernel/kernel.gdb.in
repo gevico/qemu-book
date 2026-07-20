@@ -1,0 +1,44 @@
+# RISC-V Linux kernel GDB template. Replace all uppercase placeholders.
+# `nokaslr` is a QEMU -append setting recorded by launch.sh, not a GDB command.
+set pagination off
+set confirm off
+set print pretty on
+file VMLINUX_PATH
+target remote GDB_UNIX_SOCKET
+
+# QEMU gdbstub threads are vCPUs/harts, not Linux tasks.
+info threads
+thread apply all info registers pc a0 a1 sp ra
+
+# On the OpenSBI path this catches the S-mode handoff. On kvm-direct it is the
+# first kernel boundary; there is no emulated OpenSBI stack to inspect.
+hbreak *KERNEL_PHYSICAL_ENTRY
+continue
+info registers pc a0 a1 sp ra
+# Named CSRs depend on the target description. Record missing names as absent.
+p/x $mstatus
+p/x $sstatus
+p/x $satp
+x/8i $pc
+
+# Once paging is established, the unrelocated vmlinux symbols are meaningful
+# because the guest command line contains nokaslr. Reload exact symbols rather
+# than applying the physical-entry address to every kernel symbol.
+symbol-file VMLINUX_PATH
+hbreak start_kernel
+hbreak handle_exception
+continue
+
+# Run this block only when stopped in the selected hart's exception path.
+info registers pc sp ra
+p/x $scause
+p/x $sepc
+p/x $stval
+p/x $sstatus
+p/x $satp
+x/12i $pc
+
+# Optional OpenSBI inspection is a separate symbol context. Use the exact
+# RISCV_OPENSBI_ELF hash and its linked/load address; never load a raw .bin as
+# symbols. A KVM-direct run must leave this stage absent.
+# add-symbol-file OPENSBI_ELF_PATH OPENSBI_TEXT_ADDRESS

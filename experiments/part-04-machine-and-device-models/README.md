@@ -1,7 +1,8 @@
 # Part 04: Machine and Device Models
 
-These labs move outward from the RISC-V `virt` machine to lifecycle,
-interconnect, IOMMU, virtio, and vhost behavior.
+These labs move outward from the RISC-V `virt` machine to lifecycle and a
+continuous MMIO-device-to-board exercise, then to interconnect, IOMMU, virtio,
+and vhost behavior.
 
 - [Chapter 16: RISC-V `virt` machine](chapter-16-riscv-virt-machine/)
 - [Chapter 17: Device lifecycle](chapter-17-device-lifecycle/)

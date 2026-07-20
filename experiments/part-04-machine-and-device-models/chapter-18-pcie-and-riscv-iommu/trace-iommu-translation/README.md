@@ -3,7 +3,7 @@
 Status: runnable positive DMA path with a committed Linux initramfs probe,
 fixed-tag trace checks, and a host-independent parser test.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64` and the QEMU RISC-V IOMMU model.
 
 ## Purpose
@@ -16,6 +16,7 @@ be followed through the RISC-V IOMMU translation and fault paths.
 - QEMU build containing `riscv-iommu-pci` or the supported system IOMMU.
 - RISC-V Linux 6.13 or newer with the RISC-V IOMMU, E1000E, DHCP autoconfig,
   and poweroff paths built in; static RISC-V cross compiler and `cpio`.
+- Python 3, `rg`, and GNU `timeout` on the host.
 
 ## Files
 

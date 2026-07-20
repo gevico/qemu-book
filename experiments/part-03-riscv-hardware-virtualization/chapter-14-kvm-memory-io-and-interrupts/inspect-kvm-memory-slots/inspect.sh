@@ -8,7 +8,8 @@ results_dir="${script_dir}/results"
 qemu_src="${QEMU_SRC:-}"
 qemu="${QEMU_SYSTEM_RISCV64:-}"
 
-if [[ -z "${qemu_src}" || ! -d "${qemu_src}/.git" ]]; then
+if [[ -z "${qemu_src}" ]] || \
+   ! git -C "${qemu_src}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "QEMU_SRC must point to a QEMU Git worktree" >&2
     exit 2
 fi
@@ -21,13 +22,14 @@ mkdir -p "${results_dir}"
 } >"${results_dir}/slot-source.txt"
 
 if [[ -n "${qemu}" && -x "${qemu}" && "$(uname -s)" == Linux && \
-      "$(uname -m)" == riscv64 && -r /dev/kvm ]]; then
+      "$(uname -m)" == riscv64 && -r /dev/kvm && -w /dev/kvm ]]; then
     printf 'info mtree -f\nquit\n' | "${qemu}" \
         -machine virt -accel kvm -cpu host -S -display none -serial none \
         -monitor stdio -trace enable=kvm_set_user_memory \
         -trace file="${results_dir}/slots.trace" \
         >"${results_dir}/mtree.txt" 2>"${results_dir}/qemu.stderr"
 else
-    echo "runtime_status=skipped" >"${results_dir}/runtime-status.txt"
+    echo "runtime_status=skipped: requires executable QEMU on Linux riscv64 with read/write /dev/kvm" \
+        >"${results_dir}/runtime-status.txt"
 fi
 echo "Recorded slot lifecycle source evidence and optional runtime ranges."

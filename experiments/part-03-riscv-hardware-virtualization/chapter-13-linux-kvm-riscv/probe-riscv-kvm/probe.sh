@@ -28,7 +28,7 @@ if [[ "$(uname -s)" != Linux || "$(uname -m)" != riscv64 || ! -r /dev/kvm || ! -
     echo "status=skipped: requires Linux riscv64 and read/write /dev/kvm" \
         >>"${results_dir}/probe.txt"
     echo "Recorded an explicit KVM skip in results/probe.txt."
-    exit 0
+    exit 77
 fi
 
 printf 'info cpus\nquit\n' | "${qemu}" \

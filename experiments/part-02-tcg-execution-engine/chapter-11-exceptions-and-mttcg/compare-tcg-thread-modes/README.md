@@ -2,7 +2,7 @@
 
 Status: runnable with a deterministic SMP RISC-V workload.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64`.
 
 ## Purpose
@@ -13,23 +13,29 @@ keeping the guest workload and virtual hardware constant.
 ## Prerequisites
 
 - `QEMU_SYSTEM_RISCV64` and an SMP-capable `RISCV_GUEST_IMAGE`.
-- A guest benchmark with a fixed work unit and correctness checksum.
+- Python 3 and a guest benchmark with a fixed work unit, a completion marker,
+  and a stable known-correct result field.
 
 ## Files
 
 - `README.md`: the manual.
-- `benchmark_modes.py`: identical command runner, timing, serial capture, and
-  checksums for both TCG thread policies.
-- `results/summary.json`: generated repetitions and serial SHA-256 values.
+- `benchmark_modes.py`: identical command runner, timing, serial capture,
+  result assertion, and checksums for both TCG thread policies.
+- `results/summary.json`: generated commands, validated result fields,
+  repetitions, and image/serial SHA-256 values.
 
 ## Steps
 
-1. Set `QEMU_SYSTEM_RISCV64`, `RISCV_GUEST_IMAGE`, and an optional
-   `EXPECTED_MARKER`, then run `./benchmark_modes.py`.
+1. Set `QEMU_SYSTEM_RISCV64`, `RISCV_GUEST_IMAGE`, `EXPECTED_MARKER`,
+   `RESULT_REGEX`, and `EXPECTED_RESULT`, then run `./benchmark_modes.py`.
+   `RESULT_REGEX` must contain exactly one capture group, for example
+   `^RESULT sha256=([0-9a-f]{64})$`.
 2. The runner performs five repetitions by default; change `RUNS` only while
    recording the new value.
-3. Compare serial SHA-256 values first, then calculate median durations from
-   `results/summary.json` and inspect host thread layout separately.
+3. The runner requires the captured result to equal `EXPECTED_RESULT` in every
+   repetition and across both modes. Calculate median durations only after
+   that assertion passes; whole-serial hashes are retained as artifact
+   identity, not used as the correctness field.
 4. Relate differences to synchronization in `accel/tcg/` and RISC-V atomics.
 
 ## Expected results

@@ -41,10 +41,6 @@ chapters=(
     chapter21.md
     chapter22.md
     chapter23.md
-    part6.md
-    chapter24.md
-    chapter25.md
-    chapter26.md
     quiz-answers.md
     appendix-a.md
     references.md

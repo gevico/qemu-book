@@ -1,0 +1,86 @@
+{
+    "baseline_commit": "eca2c16212ef9dcb0871de39bb9d1c2efebe76be",
+    "patch": "qemu/0001-riscv-virt-add-teaching-mmio-demo.patch",
+    "contract_markers": {
+        "riscv_mmio_model.py": [
+            "ID_VALUE = 0x51424D4D",
+            "CONTROL_MASK = CONTROL_ENABLE | CONTROL_IRQ_ENABLE",
+            "DATA_MASK = 0xFF"
+        ],
+        "guest/probe.c": [
+            "#define DEMO_BASE          0x10010000UL",
+            "#define DEMO_IRQ           12",
+            "#define ID_VALUE           0x51424d4dU",
+            "#define CONTROL_MASK       0x3U",
+            "#define DATA_MASK          0xffU"
+        ],
+        "qemu/0001-riscv-virt-add-teaching-mmio-demo.patch": [
+            "#define QB_MMIO_DEMO_ID_VALUE       0x51424d4d",
+            "#define QB_MMIO_DEMO_CONTROL_MASK        0x3",
+            "#define QB_MMIO_DEMO_DATA_MASK           0xff",
+            "[VIRT_QB_MMIO_DEMO] = { 0x10010000,        0x1000 }",
+            "QB_MMIO_DEMO_IRQ = 12"
+        ]
+    },
+    "source_anchors": {
+        "hw/misc/meson.build": [
+            "CONFIG_SIFIVE_TEST"
+        ],
+        "hw/misc/sifive_test.c": [
+            "memory_region_init_io",
+            "sysbus_init_mmio"
+        ],
+        "hw/riscv/virt.c": [
+            "virt_memmap",
+            "create_fdt_virtio",
+            "sifive_test_create",
+            "qdev_get_gpio_in"
+        ],
+        "include/hw/riscv/virt.h": [
+            "VIRT_TEST",
+            "UART0_IRQ"
+        ],
+        "tests/qtest/meson.build": [
+            "qtests_riscv64"
+        ]
+    },
+    "patch_layers": {
+        "qom": [
+            "OBJECT_DECLARE_SIMPLE_TYPE",
+            "TypeInfo",
+            "type_init"
+        ],
+        "sysbus_memory_irq": [
+            "TYPE_SYS_BUS_DEVICE",
+            "MemoryRegionOps",
+            "memory_region_init_io",
+            "sysbus_init_mmio",
+            "sysbus_init_irq",
+            "qemu_set_irq"
+        ],
+        "reset_phases": [
+            "qb_mmio_demo_reset_enter",
+            "qb_mmio_demo_reset_hold",
+            "rc->phases.enter = qb_mmio_demo_reset_enter",
+            "rc->phases.hold = qb_mmio_demo_reset_hold"
+        ],
+        "board_mapping": [
+            "VIRT_QB_MMIO_DEMO",
+            "sysbus_create_simple",
+            "QB_MMIO_DEMO_IRQ",
+            "qb-mmio-demo=on"
+        ],
+        "fdt": [
+            "qemu_fdt_add_subnode",
+            "qemu,qb-mmio-demo",
+            "interrupt-parent",
+            "interrupts"
+        ],
+        "verification": [
+            "qb-mmio-demo-test.c",
+            "qtest_writel",
+            "qtest_system_reset",
+            "VIRT_PLIC_PENDING_BASE"
+        ]
+    }
+}

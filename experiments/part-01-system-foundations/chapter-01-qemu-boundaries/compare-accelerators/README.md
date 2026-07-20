@@ -2,7 +2,7 @@
 
 Status: runnable; the KVM branch is conditional on a RISC-V KVM host.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64`.
 
 ## Purpose
@@ -13,7 +13,9 @@ settings of the same execution engine.
 ## Prerequisites
 
 - `QEMU_SYSTEM_RISCV64` names a built `qemu-system-riscv64`.
-- KVM execution additionally requires an accessible `/dev/kvm` on RISC-V.
+- `rg` for accelerator detection.
+- KVM execution additionally requires Linux on RISC-V and read-write access to
+  `/dev/kvm`.
 
 ## Files
 
@@ -25,8 +27,9 @@ settings of the same execution engine.
 
 1. Set `QEMU_SYSTEM_RISCV64` and run `./run.sh`.
 2. Inspect `results/accels.txt` and `results/tcg-monitor.txt`.
-3. On a RISC-V KVM host, the script also runs the KVM branch. Otherwise it
-   records the reason in `results/kvm-status.txt`.
+3. On a Linux/RISC-V KVM host, the script also runs the KVM branch. Otherwise
+   it records the reason in `results/kvm-status.txt` and returns `77`; retain
+   the TCG output as partial evidence, not a completed accelerator comparison.
 4. Compare `accel/tcg/tcg-accel-ops.c` with `accel/kvm/kvm-accel-ops.c` in
    `QEMU_SRC`.
 

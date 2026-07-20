@@ -7,14 +7,15 @@ the directories, filenames, code comments, and lab manuals here use English.
 ## Baseline
 
 - Target QEMU release: `v11.1.0`
-- Research and source-review anchor: `v11.1.0-rc0`
+- Source-review baseline as of 2026-07-19: `v11.1.0-rc0`
 - Primary guest architecture: RISC-V 64-bit (`riscv64`)
 - Primary system model: the RISC-V `virt` machine, unless a manual says
   otherwise
 
 Record the exact QEMU commit, host architecture, compiler, kernel, and
 accelerator in every result. Until the final `v11.1.0` tag is available, run
-source-sensitive labs against `v11.1.0-rc0` and label the result accordingly.
+source-sensitive labs against `v11.1.0-rc0` and label the result accordingly;
+an RC result is not evidence for the unreleased final tag.
 
 ## Layout
 
@@ -28,11 +29,13 @@ experiments/
 │       └── trace-riscv-virt-boot/
 │           └── README.md
 ├── ...
-└── part-06-heterogeneous-systems/
-    └── chapter-26-ai-agent-device-modeling/
+└── part-05-engineering-and-evolution/
+    └── chapter-23-rust-device-modeling/
 ```
 
-Each chapter owns at least two project directories. A project is the unit of
+The existing companion tree keeps two project directories for most chapters,
+while the book only requires one verification path when a historical or design
+chapter does not benefit from a second runtime lab. A project is the unit of
 execution: open its `README.md`, satisfy its prerequisites, and follow its
 steps without having to infer instructions from another chapter. Shared
 helpers are limited to environment validation, source reporting, and small
@@ -60,17 +63,26 @@ directories.
 | `part-03-riscv-hardware-virtualization` | 12-15 | RISC-V H extension and KVM |
 | `part-04-machine-and-device-models` | 16-19 | Machines, buses, devices, and I/O |
 | `part-05-engineering-and-evolution` | 20-23 | Debugging, tests, history, and Rust |
-| `part-06-heterogeneous-systems` | 24-26 | GPGPU, SoCs, and AI accelerators |
 
 ## Result discipline
 
 Keep generated data out of Git unless the manual explicitly names a fixture.
-Use a local `results/` directory and include at least:
+The word `runnable` describes the lab's prerequisites; it is not a claim that
+the repository contains a successful live run. For a completed run, use a
+local `results/` directory and preserve at least:
 
-1. `source-report.txt` from `tools/source-report.sh`;
+1. the source-identity fields from `tools/source-report.sh` for
+   source-sensitive labs (conventionally `source-report.txt`, or embedded in a
+   clearly named source-evidence file), or the QEMU binary version and checksum
+   for binary-only labs;
 2. the exact command line;
 3. stdout/stderr or trace output;
-4. a short observation that separates measured facts from interpretation.
+4. the exit status, including explicit `SKIP` status `77` where applicable;
+5. a short observation that separates measured facts from interpretation.
+
+Static source inspection, unit-tested models, and live runtime observations are
+three different evidence classes. State which class was actually completed,
+along with its host and commit; do not promote one class into another.
 
 See [CONVENTIONS.md](CONVENTIONS.md) for naming, reproducibility, and safety
 rules. Use [MANUAL_TEMPLATE.md](MANUAL_TEMPLATE.md) for new labs.

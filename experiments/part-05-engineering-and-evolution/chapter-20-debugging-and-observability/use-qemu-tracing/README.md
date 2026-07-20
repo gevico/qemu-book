@@ -1,8 +1,8 @@
 # Use QEMU tracing
 
-Status: runnable when at least one QEMU trace backend is enabled.
+Status: runnable when QEMU's file-emitting `log` trace backend is enabled.
 
-Baseline: QEMU `v11.1.0`; source-review anchor `v11.1.0-rc0`; RISC-V
+Target release: QEMU `v11.1.0`; source-review baseline `v11.1.0-rc0`; RISC-V
 `riscv64`.
 
 ## Purpose
@@ -13,7 +13,9 @@ events without modifying QEMU source with temporary print statements.
 ## Prerequisites
 
 - `QEMU_SYSTEM_RISCV64` and a small RISC-V guest or paused `virt` machine.
-- One trace backend supported by the local build.
+- The `log` trace backend supported by the local build. `ftrace`, syslog, UST,
+  and DTrace publish data through different host facilities and are outside
+  this runner's `lifecycle.trace` contract.
 
 ## Files
 
